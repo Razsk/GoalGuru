@@ -88,6 +88,18 @@ export class Repository {
         applied_at TEXT NOT NULL,
         FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS dev_errors (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        category TEXT NOT NULL,
+        message TEXT NOT NULL,
+        stack TEXT,
+        context_json TEXT,
+        status TEXT NOT NULL DEFAULT 'unresolved',
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_dev_errors_status ON dev_errors(status);
     `);
   }
 
@@ -469,13 +481,78 @@ export class Repository {
     const { workspaceId, baseStateVersion, adviceSummary, mutations } = params;
 
     const currentNodes = this.listNodes(workspaceId);
+    let fallbackGoalId: string | null = null;
+    const existingGoals = currentNodes.filter((n) => n.type === 'goal');
+    if (existingGoals.length > 0) {
+      fallbackGoalId = existingGoals[0].id;
+    }
+
+    const proposedNodeIds = new Set(
+      mutations.filter((m) => m.type === 'create_node').map((m: any) => m.nodeId)
+    );
+    const existingNodeIds = new Set(currentNodes.map((n) => n.id));
+
+    // Sort mutations safely: create_nodes first (parents before children), then updates, dependencies, evidence, deletions
+    const rankMap: Record<string, number> = {
+      goal: 0,
+      sub_goal: 1,
+      milestone: 2,
+      action: 3,
+      sub_action: 4,
+    };
+
+    const orderedMutations = [...mutations].sort((a, b) => {
+      if (a.type === 'create_node' && b.type === 'create_node') {
+        return (rankMap[a.nodeType] ?? 3) - (rankMap[b.nodeType] ?? 3);
+      }
+      if (a.type === 'create_node') return -1;
+      if (b.type === 'create_node') return 1;
+      if (a.type === 'delete_node') return 1;
+      if (b.type === 'delete_node') return -1;
+      return 0;
+    });
+
+    // Check if an auto-created fallback goal is needed for orphaned actions/milestones
+    let autoCreatedGoal: Node | null = null;
+    const needsFallback = orderedMutations.some(
+      (m) =>
+        m.type === 'create_node' &&
+        m.nodeType !== 'goal' &&
+        (!m.parentId || (!proposedNodeIds.has(m.parentId) && !existingNodeIds.has(m.parentId)))
+    );
+
+    if (needsFallback && !fallbackGoalId) {
+      autoCreatedGoal = this.createNode({
+        workspaceId,
+        type: 'goal',
+        parentId: null,
+        title: adviceSummary || 'Imported Plan',
+        description: 'Auto-created container for imported plan items',
+      });
+      fallbackGoalId = autoCreatedGoal.id;
+    }
+
+    // Attach any orphans to the fallback goal
+    for (const m of orderedMutations) {
+      if (m.type === 'create_node' && m.nodeType !== 'goal') {
+        if (!m.parentId || (!proposedNodeIds.has(m.parentId) && !existingNodeIds.has(m.parentId))) {
+          m.parentId = fallbackGoalId!;
+        }
+      }
+    }
 
     // Compute inverse mutations before applying (ADR 0016)
-    const inverseMutations = generateInverseMutations(mutations, currentNodes);
+    const inverseMutations = generateInverseMutations(orderedMutations, currentNodes);
+    if (autoCreatedGoal) {
+      inverseMutations.push({
+        type: 'delete_node',
+        nodeId: autoCreatedGoal.id,
+      });
+    }
 
     this.db.exec('BEGIN TRANSACTION;');
     try {
-      for (const m of mutations) {
+      for (const m of orderedMutations) {
         this.applyMutation(workspaceId, m);
       }
 
@@ -494,7 +571,7 @@ export class Repository {
           baseStateVersion,
           newStateVersion,
           adviceSummary || null,
-          JSON.stringify(mutations),
+          JSON.stringify(orderedMutations),
           JSON.stringify(inverseMutations),
           now
         );
@@ -533,4 +610,76 @@ export class Repository {
       throw err;
     }
   }
+
+  // --- Error Telemetry (ADR 0019) ---
+
+  logError(params: {
+    source?: 'server' | 'client';
+    category?: string;
+    message: string;
+    stack?: string;
+    contextJson?: string;
+  }): DevErrorRecord {
+    const id = generateId('err');
+    const source = params.source || 'server';
+    const category = params.category || 'general';
+    const now = new Date().toISOString();
+
+    this.db
+      .prepare(
+        'INSERT INTO dev_errors (id, source, category, message, stack, context_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(id, source, category, params.message, params.stack || null, params.contextJson || null, 'unresolved', now);
+
+    return {
+      id,
+      source,
+      category,
+      message: params.message,
+      stack: params.stack || null,
+      contextJson: params.contextJson || null,
+      status: 'unresolved',
+      createdAt: now,
+    };
+  }
+
+  listErrors(options?: { status?: string; limit?: number }): DevErrorRecord[] {
+    const limit = options?.limit ?? 100;
+    if (options?.status && options.status !== 'all') {
+      const rows = this.db
+        .prepare(
+          'SELECT id, source, category, message, stack, context_json as contextJson, status, created_at as createdAt FROM dev_errors WHERE status = ? ORDER BY created_at DESC LIMIT ?'
+        )
+        .all(options.status, limit) as unknown as DevErrorRecord[];
+      return rows;
+    }
+    const rows = this.db
+      .prepare(
+        'SELECT id, source, category, message, stack, context_json as contextJson, status, created_at as createdAt FROM dev_errors ORDER BY created_at DESC LIMIT ?'
+      )
+      .all(limit) as unknown as DevErrorRecord[];
+    return rows;
+  }
+
+  markErrorStatus(id: string, status: 'unresolved' | 'resolved' | 'ignored'): boolean {
+    const res = this.db
+      .prepare('UPDATE dev_errors SET status = ? WHERE id = ?')
+      .run(status, id);
+    return res.changes > 0;
+  }
+
+  clearErrors(): void {
+    this.db.exec('DELETE FROM dev_errors;');
+  }
+}
+
+export interface DevErrorRecord {
+  id: string;
+  source: 'server' | 'client';
+  category: string;
+  message: string;
+  stack?: string | null;
+  contextJson?: string | null;
+  status: 'unresolved' | 'resolved' | 'ignored';
+  createdAt: string;
 }

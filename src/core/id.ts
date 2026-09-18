@@ -29,6 +29,6 @@ export function generateNodeId(type: NodeType): string {
   }
 }
 
-export function generateId(prefix: 'ws' | 'usr' | 'dep' | 'ev' | 'prop'): string {
+export function generateId(prefix: 'ws' | 'usr' | 'dep' | 'ev' | 'prop' | 'err'): string {
   return `${prefix}_${generateNanoId(8)}`;
 }

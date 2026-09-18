@@ -165,4 +165,150 @@ Good luck!
     expect(revertedGraphRes.json().nodes).toHaveLength(1);
     expect(revertedGraphRes.json().dependencies).toHaveLength(0);
   });
+
+  it('successfully commits proposal containing multiple root goals without parentId', async () => {
+    const wsRes = await app.inject({
+      method: 'POST',
+      url: '/api/workspaces',
+      payload: { name: 'Multi-Goal Test' },
+    });
+    const wsId = wsRes.json().id;
+
+    const rawProposal = `
+Here are 3 recommended goals:
+\`\`\`goalguru-proposal
+{
+  "protocolVersion": "1.0",
+  "stateVersion": 1,
+  "advice": { "summary": "3 new high-level goals" },
+  "changeSet": [
+    { "type": "create_node", "tempId": "temp:g-1", "nodeType": "goal", "title": "Launch App" },
+    { "type": "create_node", "tempId": "temp:g-2", "nodeType": "goal", "parentId": null, "title": "Run Marathon" },
+    { "type": "create_node", "tempId": "temp:g-3", "nodeType": "goal", "title": "Write Book" }
+  ]
+}
+\`\`\`
+`;
+
+    const parseRes = await app.inject({
+      method: 'POST',
+      url: `/api/workspaces/${wsId}/parse-proposal`,
+      payload: { rawText: rawProposal },
+    });
+    expect(parseRes.statusCode).toBe(200);
+    const parsedData = parseRes.json();
+    expect(parsedData.changeSet).toHaveLength(3);
+
+    const commitRes = await app.inject({
+      method: 'POST',
+      url: `/api/workspaces/${wsId}/commit-proposal`,
+      payload: {
+        baseStateVersion: 1,
+        selectedMutations: parsedData.changeSet,
+      },
+    });
+    expect(commitRes.statusCode).toBe(200);
+    expect(commitRes.json().success).toBe(true);
+
+    const graphRes = await app.inject({
+      method: 'GET',
+      url: `/api/workspaces/${wsId}/graph`,
+    });
+    expect(graphRes.json().nodes).toHaveLength(3);
+  });
+
+  it('handles and queries error telemetry via API (ADR 0019)', async () => {
+    // 1. Post a client error
+    const postRes = await app.inject({
+      method: 'POST',
+      url: '/api/errors',
+      payload: {
+        category: 'client_ui_test',
+        message: 'Test client exception',
+        stack: 'Error: Test client exception at...',
+      },
+    });
+    expect(postRes.statusCode).toBe(200);
+    const errRecord = postRes.json();
+    expect(errRecord.id).toMatch(/^err_/);
+    expect(errRecord.status).toBe('unresolved');
+
+    // 2. Query errors
+    const listRes = await app.inject({
+      method: 'GET',
+      url: '/api/errors?status=unresolved',
+    });
+    expect(listRes.statusCode).toBe(200);
+    expect(listRes.json().errors.length).toBeGreaterThanOrEqual(1);
+
+    // 3. Mark as resolved
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/errors/${errRecord.id}`,
+      payload: { status: 'resolved' },
+    });
+    expect(patchRes.statusCode).toBe(200);
+    expect(patchRes.json().success).toBe(true);
+
+    // 4. Clear all errors
+    const delRes = await app.inject({
+      method: 'DELETE',
+      url: '/api/errors',
+    });
+    expect(delRes.statusCode).toBe(200);
+
+    const emptyList = await app.inject({
+      method: 'GET',
+      url: '/api/errors',
+    });
+    expect(emptyList.json().errors).toHaveLength(0);
+  });
+
+  it('auto-creates container Goal when proposal contains actions without a parent goal', async () => {
+    const wsRes = await app.inject({
+      method: 'POST',
+      url: '/api/workspaces',
+      payload: { name: 'Orphan Action Test' },
+    });
+    const wsId = wsRes.json().id;
+
+    const commitRes = await app.inject({
+      method: 'POST',
+      url: `/api/workspaces/${wsId}/commit-proposal`,
+      payload: {
+        baseStateVersion: 1,
+        adviceSummary: 'Build authentication service',
+        selectedMutations: [
+          { type: 'create_node', tempId: 'temp:act-1', nodeType: 'action', title: 'Write OAuth Handler' },
+          { type: 'create_node', tempId: 'temp:act-2', nodeType: 'action', title: 'Add Session Cookie' },
+        ],
+      },
+    });
+
+    expect(commitRes.statusCode).toBe(200);
+    expect(commitRes.json().success).toBe(true);
+
+    const graphRes = await app.inject({
+      method: 'GET',
+      url: `/api/workspaces/${wsId}/graph`,
+    });
+    const nodes = graphRes.json().nodes;
+    expect(nodes).toHaveLength(3); // 1 auto-goal + 2 actions
+    const autoGoal = nodes.find((n: any) => n.type === 'goal');
+    expect(autoGoal).toBeDefined();
+    expect(autoGoal.title).toBe('Build authentication service');
+
+    // Undo rollback
+    const undoRes = await app.inject({
+      method: 'POST',
+      url: `/api/workspaces/${wsId}/undo`,
+    });
+    expect(undoRes.statusCode).toBe(200);
+
+    const emptyGraphRes = await app.inject({
+      method: 'GET',
+      url: `/api/workspaces/${wsId}/graph`,
+    });
+    expect(emptyGraphRes.json().nodes).toHaveLength(0);
+  });
 });

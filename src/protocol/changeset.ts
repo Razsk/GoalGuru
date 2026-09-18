@@ -27,7 +27,7 @@ export function resolveTemporaryIds(mutations: Mutation[]): ResolvedChangeSet {
     switch (m.type) {
       case 'create_node': {
         const nodeId = m.nodeId || (m.tempId ? idMap.get(m.tempId) : undefined) || generateNodeId(m.nodeType);
-        const parentId = idMap.get(m.parentId) || m.parentId;
+        const parentId = m.parentId ? (idMap.get(m.parentId) || m.parentId) : null;
         return {
           ...m,
           nodeId,
@@ -114,26 +114,28 @@ export function pruneDeselectedMutations(
     for (const m of currentActive) {
       // Rule 1 (ADR 0005): If this is a create_node whose parentId was a proposed node that is now pruned, prune this child
       if (m.type === 'create_node') {
-        const isParentProposed =
-          m.parentId.startsWith('temp:') ||
-          mutations.some(
-            (other) => other.type === 'create_node' && (other.tempId === m.parentId || other.nodeId === m.parentId)
-          );
-        if (isParentProposed && !survivingNodeIds.has(m.parentId)) {
-          changed = true;
-          continue; // Pruned!
+        if (m.parentId) {
+          const isParentProposed =
+            m.parentId.startsWith('temp:') ||
+            mutations.some(
+              (other) => other.type === 'create_node' && (other.tempId === m.parentId || other.nodeId === m.parentId)
+            );
+          if (isParentProposed && !survivingNodeIds.has(m.parentId)) {
+            changed = true;
+            continue; // Pruned!
+          }
         }
       }
 
       // Rule 2: If an add_dependency references a proposed node that is no longer surviving, prune the dependency
       if (m.type === 'add_dependency') {
         const isFromProposed =
-          m.fromNodeId.startsWith('temp:') ||
+          (m.fromNodeId && m.fromNodeId.startsWith('temp:')) ||
           mutations.some(
             (other) => other.type === 'create_node' && (other.tempId === m.fromNodeId || other.nodeId === m.fromNodeId)
           );
         const isToProposed =
-          m.toNodeId.startsWith('temp:') ||
+          (m.toNodeId && m.toNodeId.startsWith('temp:')) ||
           mutations.some(
             (other) => other.type === 'create_node' && (other.tempId === m.toNodeId || other.nodeId === m.toNodeId)
           );

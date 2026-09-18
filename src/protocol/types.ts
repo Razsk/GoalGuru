@@ -5,7 +5,7 @@ export interface CreateNodeMutation {
   tempId?: string;
   nodeId?: string; // assigned when resolved
   nodeType: NodeType;
-  parentId: string;
+  parentId?: string | null;
   title: string;
   description?: string;
   inputs?: string;

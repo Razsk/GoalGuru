@@ -18,6 +18,29 @@ export function buildApp(options: AppOptions): FastifyInstance {
 
   app.register(cors, { origin: true });
 
+  // Global Error Handler & Telemetry (ADR 0019)
+  app.setErrorHandler((error: any, req, reply) => {
+    try {
+      repo.logError({
+        source: 'server',
+        category: 'unhandled_api_error',
+        message: error?.message || 'Unknown Server Error',
+        stack: error?.stack,
+        contextJson: JSON.stringify({
+          url: req.raw.url,
+          method: req.raw.method,
+          params: req.params,
+        }),
+      });
+    } catch {
+      // Ignore secondary logging failures
+    }
+    const statusCode = error?.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
+    reply.status(statusCode).send({
+      error: error?.message || 'Internal Server Error',
+    });
+  });
+
   // Middleware / Hook: Mock or Session Auth
   // Default to local user for offline-first operation (ADR 0015 & ADR 0018)
   app.decorateRequest('user', null);
@@ -259,23 +282,38 @@ export function buildApp(options: AppOptions): FastifyInstance {
       return reply.status(400).send({ error: 'selectedMutations is required.' });
     }
 
-    // Apply cascading pruning to ensure referential integrity (ADR 0005)
-    const selectedKeys = new Set(
-      body.selectedMutations.map((m, idx) => getMutationKey(m, idx))
-    );
-    const prunedMutations = pruneDeselectedMutations(body.selectedMutations, selectedKeys);
+    try {
+      // Apply cascading pruning to ensure referential integrity (ADR 0005)
+      const selectedKeys = new Set(
+        body.selectedMutations.map((m, idx) => getMutationKey(m, idx))
+      );
+      const prunedMutations = pruneDeselectedMutations(body.selectedMutations, selectedKeys);
 
-    // Resolve temporary IDs
-    const { resolvedMutations } = resolveTemporaryIds(prunedMutations);
+      // Resolve temporary IDs
+      const { resolvedMutations } = resolveTemporaryIds(prunedMutations);
 
-    const result = repo.commitProposal({
-      workspaceId: id,
-      baseStateVersion: body.baseStateVersion,
-      adviceSummary: body.adviceSummary,
-      mutations: resolvedMutations,
-    });
+      const result = repo.commitProposal({
+        workspaceId: id,
+        baseStateVersion: body.baseStateVersion,
+        adviceSummary: body.adviceSummary,
+        mutations: resolvedMutations,
+      });
 
-    return result;
+      return result;
+    } catch (err: any) {
+      repo.logError({
+        source: 'server',
+        category: 'proposal_commit',
+        message: err.message,
+        stack: err.stack,
+        contextJson: JSON.stringify({
+          workspaceId: id,
+          baseStateVersion: body.baseStateVersion,
+          mutationCount: body.selectedMutations.length,
+        }),
+      });
+      return reply.status(400).send({ error: err.message });
+    }
   });
 
   // Undo Last Proposal (ADR 0016)
@@ -283,6 +321,49 @@ export function buildApp(options: AppOptions): FastifyInstance {
     const { id } = req.params as { id: string };
     const result = repo.undoLastProposal(id);
     return result;
+  });
+
+  // Error Telemetry Endpoints (ADR 0019)
+  app.post('/api/errors', async (req, reply) => {
+    const body = req.body as {
+      category?: string;
+      message: string;
+      stack?: string;
+      contextJson?: string;
+    };
+    if (!body?.message) {
+      return reply.status(400).send({ error: 'message is required.' });
+    }
+    const record = repo.logError({
+      source: 'client',
+      category: body.category || 'client_ui',
+      message: body.message,
+      stack: body.stack,
+      contextJson: body.contextJson,
+    });
+    return record;
+  });
+
+  app.get('/api/errors', async (req) => {
+    const query = req.query as { status?: string; limit?: string };
+    const limit = query.limit ? parseInt(query.limit, 10) : 100;
+    const errors = repo.listErrors({ status: query.status, limit });
+    return { errors };
+  });
+
+  app.patch('/api/errors/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as { status: 'unresolved' | 'resolved' | 'ignored' };
+    if (!body?.status) {
+      return reply.status(400).send({ error: 'status is required.' });
+    }
+    const success = repo.markErrorStatus(id, body.status);
+    return { success };
+  });
+
+  app.delete('/api/errors', async () => {
+    repo.clearErrors();
+    return { success: true };
   });
 
   // System Prompt for Custom GPTs / Claude Projects (ADR 0017)

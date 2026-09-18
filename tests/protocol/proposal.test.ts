@@ -234,4 +234,41 @@ describe('Inverse Mutation Generation (ADR 0016)', () => {
       },
     ]);
   });
+
+  it('safely prunes and resolves top-level goal mutations with null or omitted parentId', () => {
+    const mutations: Mutation[] = [
+      {
+        type: 'create_node',
+        tempId: 'temp:goal-1',
+        nodeType: 'goal',
+        title: 'Launch SaaS',
+      },
+      {
+        type: 'create_node',
+        tempId: 'temp:goal-2',
+        nodeType: 'goal',
+        parentId: null,
+        title: 'Run Marathon',
+      },
+      {
+        type: 'create_node',
+        tempId: 'temp:goal-3',
+        nodeType: 'goal',
+        title: 'Learn Guitar',
+      },
+    ];
+
+    const selectedKeys = new Set(['temp:goal-1', 'temp:goal-2', 'temp:goal-3']);
+    const pruned = pruneDeselectedMutations(mutations, selectedKeys);
+    expect(pruned).toHaveLength(3);
+
+    const { resolvedMutations } = resolveTemporaryIds(pruned);
+    expect(resolvedMutations).toHaveLength(3);
+    for (const m of resolvedMutations) {
+      if (m.type === 'create_node') {
+        expect(m.nodeId).toMatch(/^goal_/);
+        expect(m.parentId).toBeNull();
+      }
+    }
+  });
 });

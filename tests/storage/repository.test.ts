@@ -187,4 +187,37 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     const nodeAfterUndo = repo.getNode(goal.id);
     expect(nodeAfterUndo?.evidence).toHaveLength(0);
   });
+
+  it('records, queries, and updates error telemetry records (ADR 0019)', () => {
+    const err1 = repo.logError({
+      source: 'server',
+      category: 'proposal_commit',
+      message: 'Cannot read properties of undefined',
+      stack: 'TypeError: Cannot read properties...',
+      contextJson: JSON.stringify({ workspaceId: 'ws_test' }),
+    });
+
+    expect(err1.id).toMatch(/^err_/);
+    expect(err1.status).toBe('unresolved');
+
+    const err2 = repo.logError({
+      source: 'client',
+      category: 'window_onerror',
+      message: 'Failed to fetch',
+    });
+
+    const unresolved = repo.listErrors({ status: 'unresolved' });
+    expect(unresolved.length).toBeGreaterThanOrEqual(2);
+
+    // Mark first error resolved
+    const updated = repo.markErrorStatus(err1.id, 'resolved');
+    expect(updated).toBe(true);
+
+    const resolved = repo.listErrors({ status: 'resolved' });
+    expect(resolved.some((e) => e.id === err1.id)).toBe(true);
+
+    // Clear all
+    repo.clearErrors();
+    expect(repo.listErrors()).toHaveLength(0);
+  });
 });
