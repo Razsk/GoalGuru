@@ -10,6 +10,7 @@ export interface CreateNodeMutation {
   description?: string;
   inputs?: string;
   expectedOutputs?: string;
+  actualOutputs?: string;
 }
 
 export interface UpdateNodeMutation {
@@ -19,6 +20,7 @@ export interface UpdateNodeMutation {
   description?: string;
   inputs?: string;
   expectedOutputs?: string;
+  actualOutputs?: string;
 }
 
 export interface UpdateStatusMutation {
@@ -55,6 +57,11 @@ export interface AddEvidenceMutation {
   confidence?: EvidenceConfidence;
 }
 
+export interface RemoveEvidenceMutation {
+  type: 'remove_evidence';
+  evidenceId: string;
+}
+
 export type Mutation =
   | CreateNodeMutation
   | UpdateNodeMutation
@@ -62,7 +69,8 @@ export type Mutation =
   | DeleteNodeMutation
   | AddDependencyMutation
   | RemoveDependencyMutation
-  | AddEvidenceMutation;
+  | AddEvidenceMutation
+  | RemoveEvidenceMutation;
 
 export interface ProposalAdvice {
   summary?: string;

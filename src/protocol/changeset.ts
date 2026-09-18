@@ -1,6 +1,6 @@
 import { Mutation, CreateNodeMutation } from './types.js';
-import { Node, Dependency } from '../core/types.js';
-import { generateNodeId } from '../core/id.js';
+import { Node } from '../core/types.js';
+import { generateId, generateNodeId } from '../core/id.js';
 
 export interface ResolvedChangeSet {
   resolvedMutations: Mutation[];
@@ -55,9 +55,11 @@ export function resolveTemporaryIds(mutations: Mutation[]): ResolvedChangeSet {
       }
       case 'add_evidence': {
         const nodeId = idMap.get(m.nodeId) || m.nodeId;
+        const evidenceId = m.evidenceId || generateId('ev');
         return {
           ...m,
           nodeId,
+          evidenceId,
         };
       }
       default:
@@ -68,6 +70,19 @@ export function resolveTemporaryIds(mutations: Mutation[]): ResolvedChangeSet {
   return { resolvedMutations, idMap };
 }
 
+// Helper to get mutation key
+export function getMutationKey(m: Mutation, index: number = 0): string {
+  if (m.type === 'create_node') return m.tempId || m.nodeId || `create_${index}`;
+  if (m.type === 'update_node') return `update_${m.nodeId}`;
+  if (m.type === 'update_status') return `status_${m.nodeId}`;
+  if (m.type === 'delete_node') return `delete_${m.nodeId}`;
+  if (m.type === 'add_dependency') return `dep_${m.fromNodeId}_${m.toNodeId}`;
+  if (m.type === 'remove_dependency') return `remdep_${m.fromNodeId}_${m.toNodeId}`;
+  if (m.type === 'add_evidence') return m.evidenceId || `ev_${m.nodeId}_${index}`;
+  if (m.type === 'remove_evidence') return `remev_${m.evidenceId}`;
+  return `mut_${index}`;
+}
+
 /**
  * Prunes deselected mutations and applies cascading pruning for dependent and child nodes (ADR 0005)
  */
@@ -75,22 +90,9 @@ export function pruneDeselectedMutations(
   mutations: Mutation[],
   selectedKeys: Set<string>
 ): Mutation[] {
-  // Helper to get mutation key
-  function getMutationKey(m: Mutation, index: number): string {
-    if (m.type === 'create_node') return m.tempId || m.nodeId || `create_${index}`;
-    if (m.type === 'update_node') return `update_${m.nodeId}`;
-    if (m.type === 'update_status') return `status_${m.nodeId}`;
-    if (m.type === 'delete_node') return `delete_${m.nodeId}`;
-    if (m.type === 'add_dependency') return `dep_${m.fromNodeId}_${m.toNodeId}`;
-    if (m.type === 'remove_dependency') return `remdep_${m.fromNodeId}_${m.toNodeId}`;
-    if (m.type === 'add_evidence') return `ev_${m.nodeId}_${index}`;
-    return `mut_${index}`;
-  }
-
   // Active set of surviving node IDs / temp IDs created in this proposal
   let currentActive = mutations.filter((m, i) => {
     const key = getMutationKey(m, i);
-    // Allow matching by direct tempId/nodeId or synthetic key
     const altKey = m.type === 'create_node' ? m.tempId || m.nodeId : undefined;
     return selectedKeys.has(key) || (altKey && selectedKeys.has(altKey));
   });
@@ -112,9 +114,11 @@ export function pruneDeselectedMutations(
     for (const m of currentActive) {
       // Rule 1 (ADR 0005): If this is a create_node whose parentId was a proposed node that is now pruned, prune this child
       if (m.type === 'create_node') {
-        const isParentProposed = mutations.some(
-          (other) => other.type === 'create_node' && (other.tempId === m.parentId || other.nodeId === m.parentId)
-        );
+        const isParentProposed =
+          m.parentId.startsWith('temp:') ||
+          mutations.some(
+            (other) => other.type === 'create_node' && (other.tempId === m.parentId || other.nodeId === m.parentId)
+          );
         if (isParentProposed && !survivingNodeIds.has(m.parentId)) {
           changed = true;
           continue; // Pruned!
@@ -123,12 +127,16 @@ export function pruneDeselectedMutations(
 
       // Rule 2: If an add_dependency references a proposed node that is no longer surviving, prune the dependency
       if (m.type === 'add_dependency') {
-        const isFromProposed = mutations.some(
-          (other) => other.type === 'create_node' && (other.tempId === m.fromNodeId || other.nodeId === m.fromNodeId)
-        );
-        const isToProposed = mutations.some(
-          (other) => other.type === 'create_node' && (other.tempId === m.toNodeId || other.nodeId === m.toNodeId)
-        );
+        const isFromProposed =
+          m.fromNodeId.startsWith('temp:') ||
+          mutations.some(
+            (other) => other.type === 'create_node' && (other.tempId === m.fromNodeId || other.nodeId === m.fromNodeId)
+          );
+        const isToProposed =
+          m.toNodeId.startsWith('temp:') ||
+          mutations.some(
+            (other) => other.type === 'create_node' && (other.tempId === m.toNodeId || other.nodeId === m.toNodeId)
+          );
 
         if ((isFromProposed && !survivingNodeIds.has(m.fromNodeId)) || (isToProposed && !survivingNodeIds.has(m.toNodeId))) {
           changed = true;
@@ -150,8 +158,7 @@ export function pruneDeselectedMutations(
  */
 export function generateInverseMutations(
   appliedMutations: Mutation[],
-  currentNodes: Node[],
-  currentDeps: Dependency[]
+  currentNodes: Node[]
 ): Mutation[] {
   const nodeMap = new Map<string, Node>();
   for (const n of currentNodes) {
@@ -185,6 +192,7 @@ export function generateInverseMutations(
             description: existing.description,
             inputs: existing.inputs,
             expectedOutputs: existing.expectedOutputs,
+            actualOutputs: existing.actualOutputs,
           });
         }
         break;
@@ -212,6 +220,7 @@ export function generateInverseMutations(
             description: existing.description,
             inputs: existing.inputs,
             expectedOutputs: existing.expectedOutputs,
+            actualOutputs: existing.actualOutputs,
           });
         }
         break;
@@ -230,6 +239,19 @@ export function generateInverseMutations(
           fromNodeId: m.fromNodeId,
           toNodeId: m.toNodeId,
         });
+        break;
+      }
+      case 'add_evidence': {
+        if (m.evidenceId) {
+          inverses.push({
+            type: 'remove_evidence',
+            evidenceId: m.evidenceId,
+          });
+        }
+        break;
+      }
+      case 'remove_evidence': {
+        // No-op or restore if needed
         break;
       }
     }

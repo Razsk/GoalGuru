@@ -43,7 +43,7 @@ export interface Dependency {
   id: string;
   workspaceId: string;
   fromNodeId: string; // The dependent node (e.g. Action A)
-  toNodeId: string;   // The prerequisite node that must be completed (e.g. Action B)
+  toNodeId: string;   // The dependency target node that must be completed first (e.g. Action B)
   createdAt: string;
 }
 

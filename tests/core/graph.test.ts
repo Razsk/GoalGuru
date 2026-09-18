@@ -101,7 +101,7 @@ describe('Dynamic Readiness Computation (ADR 0003)', () => {
     expect(readinessMap.get('act_1')).toEqual({ readiness: 'ready', blockingNodeIds: [] });
   });
 
-  it('marks node as blocked if prerequisite is todo or in_progress', () => {
+  it('marks node as blocked if dependency is todo or in_progress', () => {
     const nodes = [
       createMockNode('act_1', 'todo'),
       createMockNode('act_2', 'todo'),
@@ -116,7 +116,7 @@ describe('Dynamic Readiness Computation (ADR 0003)', () => {
     expect(readinessMap.get('act_2')).toEqual({ readiness: 'blocked', blockingNodeIds: ['act_1'] });
   });
 
-  it('marks node as ready once all prerequisites are done', () => {
+  it('marks node as ready once all dependencies are done', () => {
     const nodes = [
       createMockNode('act_1', 'done'),
       createMockNode('act_2', 'todo'),
@@ -129,7 +129,7 @@ describe('Dynamic Readiness Computation (ADR 0003)', () => {
     expect(readinessMap.get('act_2')).toEqual({ readiness: 'ready', blockingNodeIds: [] });
   });
 
-  it('marks node as blocked if at least one prerequisite is not done', () => {
+  it('marks node as blocked if at least one dependency is not done', () => {
     const nodes = [
       createMockNode('act_1', 'done'),
       createMockNode('act_2', 'in_progress'),

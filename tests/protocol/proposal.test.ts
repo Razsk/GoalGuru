@@ -130,21 +130,21 @@ describe('Cascading Deselection Pruning (ADR 0005)', () => {
     expect(pruned.map((m) => (m.type === 'create_node' ? m.tempId : ''))).toEqual(['temp:act-2']);
   });
 
-  it('prunes dependencies when a dependent or prerequisite node is deselected', () => {
+  it('prunes dependencies when a dependent or dependency target node is deselected', () => {
     const mutations: Mutation[] = [
       {
         type: 'create_node',
         tempId: 'temp:act-1',
         nodeType: 'action',
         parentId: 'goal_1',
-        title: 'Task 1',
+        title: 'Action 1',
       },
       {
         type: 'create_node',
         tempId: 'temp:act-2',
         nodeType: 'action',
         parentId: 'goal_1',
-        title: 'Task 2',
+        title: 'Action 2',
       },
       {
         type: 'add_dependency',
@@ -165,7 +165,6 @@ describe('Cascading Deselection Pruning (ADR 0005)', () => {
 describe('Inverse Mutation Generation (ADR 0016)', () => {
   it('generates inverse delete_node for create_node', () => {
     const currentNodes: Node[] = [];
-    const currentDeps: Dependency[] = [];
     const applied: Mutation[] = [
       {
         type: 'create_node',
@@ -176,7 +175,7 @@ describe('Inverse Mutation Generation (ADR 0016)', () => {
       },
     ];
 
-    const inverses = generateInverseMutations(applied, currentNodes, currentDeps);
+    const inverses = generateInverseMutations(applied, currentNodes);
     expect(inverses).toEqual([
       {
         type: 'delete_node',
@@ -207,12 +206,31 @@ describe('Inverse Mutation Generation (ADR 0016)', () => {
       },
     ];
 
-    const inverses = generateInverseMutations(applied, currentNodes, []);
+    const inverses = generateInverseMutations(applied, currentNodes);
     expect(inverses).toEqual([
       {
         type: 'update_status',
         nodeId: 'act_1',
         status: 'todo',
+      },
+    ]);
+  });
+
+  it('generates inverse remove_evidence for add_evidence (ADR 0016)', () => {
+    const applied: Mutation[] = [
+      {
+        type: 'add_evidence',
+        evidenceId: 'ev_123',
+        nodeId: 'goal_1',
+        content: 'Candidate fact',
+      },
+    ];
+
+    const inverses = generateInverseMutations(applied, []);
+    expect(inverses).toEqual([
+      {
+        type: 'remove_evidence',
+        evidenceId: 'ev_123',
       },
     ]);
   });

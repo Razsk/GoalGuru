@@ -92,11 +92,11 @@ describe('Subgraph Context Exporter (ADR 0006 & ADR 0013)', () => {
     expect(exportedIds).toContain('goal_1'); // Ancestor
     expect(exportedIds).toContain('mile_backend'); // Focus
     expect(exportedIds).toContain('act_db'); // Descendant
-    expect(exportedIds).toContain('act_domain'); // Direct prerequisite
+    expect(exportedIds).toContain('act_domain'); // Direct dependency target
     expect(exportedIds).not.toContain('mile_marketing'); // Unrelated sibling
   });
 
-  it('applies asymmetric pruning to ancestors and prerequisites (ADR 0013)', () => {
+  it('applies asymmetric pruning to ancestors and dependencies (ADR 0013)', () => {
     const subgraph = extractCausalSubgraph('mile_backend', allNodes, dependencies);
 
     const ancestor = subgraph.nodes.find((n) => n.id === 'goal_1')!;
@@ -128,5 +128,29 @@ describe('Subgraph Context Exporter (ADR 0006 & ADR 0013)', () => {
     // User request & Mode
     expect(prompt).toContain('REQUEST MODE: create_plan');
     expect(prompt).toContain('Please decompose this into 3 discrete actions.');
+  });
+
+  it('tailors subgraph context for create_plan by including peer milestones (docs/request-modes.md)', () => {
+    const subgraph = extractCausalSubgraph('mile_backend', allNodes, dependencies, 'create_plan');
+    const exportedIds = subgraph.nodes.map((n) => n.id);
+    expect(exportedIds).toContain('mile_marketing'); // Peer milestone included for plan coherence
+  });
+
+  it('tailors subgraph context for report_progress by including active actions', () => {
+    const inProgressAction: Node = {
+      id: 'act_active',
+      workspaceId: 'ws_1',
+      type: 'action',
+      parentId: 'mile_marketing',
+      title: 'Active Work',
+      status: 'in_progress',
+      evidence: [],
+      createdAt: '',
+      updatedAt: '',
+    };
+    const nodes = [...allNodes, inProgressAction];
+    const subgraph = extractCausalSubgraph('mile_backend', nodes, dependencies, 'report_progress');
+    const exportedIds = subgraph.nodes.map((n) => n.id);
+    expect(exportedIds).toContain('act_active');
   });
 });

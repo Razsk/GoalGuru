@@ -65,6 +65,7 @@ export function parseProposalEnvelope(jsonString: string): ProposalEnvelope {
     'add_dependency',
     'remove_dependency',
     'add_evidence',
+    'remove_evidence',
   ]);
 
   for (let i = 0; i < obj.changeSet.length; i++) {

@@ -2,7 +2,7 @@ import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import { Repository } from '../storage/repository.js';
 import { extractProposalFromText, parseProposalEnvelope } from '../protocol/parser.js';
-import { resolveTemporaryIds, pruneDeselectedMutations } from '../protocol/changeset.js';
+import { resolveTemporaryIds, pruneDeselectedMutations, getMutationKey } from '../protocol/changeset.js';
 import { extractCausalSubgraph, formatExportPrompt } from '../protocol/exporter.js';
 import { computeReadiness } from '../core/readiness.js';
 import { detectCycle } from '../core/cycle.js';
@@ -179,7 +179,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     const allDeps = repo.listDependencies(id);
     const stateVersion = repo.getStateVersion(id);
 
-    const subgraph = extractCausalSubgraph(body.focusNodeId, allNodes, allDeps);
+    const subgraph = extractCausalSubgraph(body.focusNodeId, allNodes, allDeps, body.requestMode);
     const prompt = formatExportPrompt({
       requestMode: body.requestMode,
       focusNodeId: body.focusNodeId,
@@ -212,13 +212,23 @@ export function buildApp(options: AppOptions): FastifyInstance {
       // Check touch-set collision (ADR 0004)
       const collision = repo.checkCollisions(id, envelope.stateVersion, envelope.changeSet);
 
-      // Pre-check cycle detection for any proposed dependency additions (ADR 0012)
+      // Pre-check cycle detection for proposed dependency changes (ADR 0012)
+      // Account for dependencies being removed by the proposal
       const existingDeps = repo.listDependencies(id);
+      const removedDepKeys = new Set(
+        envelope.changeSet
+          .filter((m) => m.type === 'remove_dependency')
+          .map((m: any) => `${m.fromNodeId}->${m.toNodeId}`)
+      );
+      const survivingDeps = existingDeps
+        .filter((d) => !removedDepKeys.has(`${d.fromNodeId}->${d.toNodeId}`))
+        .map((d) => ({ fromNodeId: d.fromNodeId, toNodeId: d.toNodeId }));
+
       const proposedDeps = envelope.changeSet
         .filter((m) => m.type === 'add_dependency')
         .map((m: any) => ({ fromNodeId: m.fromNodeId, toNodeId: m.toNodeId }));
 
-      const cycleResult = detectCycle([...existingDeps, ...proposedDeps]);
+      const cycleResult = detectCycle([...survivingDeps, ...proposedDeps]);
 
       return {
         protocolVersion: envelope.protocolVersion,
@@ -249,8 +259,14 @@ export function buildApp(options: AppOptions): FastifyInstance {
       return reply.status(400).send({ error: 'selectedMutations is required.' });
     }
 
+    // Apply cascading pruning to ensure referential integrity (ADR 0005)
+    const selectedKeys = new Set(
+      body.selectedMutations.map((m, idx) => getMutationKey(m, idx))
+    );
+    const prunedMutations = pruneDeselectedMutations(body.selectedMutations, selectedKeys);
+
     // Resolve temporary IDs
-    const { resolvedMutations } = resolveTemporaryIds(body.selectedMutations);
+    const { resolvedMutations } = resolveTemporaryIds(prunedMutations);
 
     const result = repo.commitProposal({
       workspaceId: id,

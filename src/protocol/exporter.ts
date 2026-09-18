@@ -7,7 +7,7 @@ export interface CausalSubgraph {
 }
 
 export interface ExportPromptOptions {
-  requestMode: 'create_plan' | 'task_assistance' | 'report_progress' | 'replan' | string;
+  requestMode: 'create_plan' | 'action_assistance' | 'task_assistance' | 'report_progress' | 'replan' | string;
   focusNodeId: string;
   stateVersion: number;
   subgraph: CausalSubgraph;
@@ -15,12 +15,14 @@ export interface ExportPromptOptions {
 }
 
 /**
- * Extracts minimal causal path with asymmetric pruning (ADR 0006 & ADR 0013)
+ * Extracts minimal causal path with asymmetric pruning (ADR 0006 & ADR 0013),
+ * tailored according to the request mode (docs/request-modes.md).
  */
 export function extractCausalSubgraph(
   focusNodeId: string,
   allNodes: Node[],
-  allDeps: Dependency[]
+  allDeps: Dependency[],
+  requestMode?: string
 ): CausalSubgraph {
   const nodeMap = new Map<string, Node>();
   for (const n of allNodes) {
@@ -53,18 +55,36 @@ export function extractCausalSubgraph(
   }
   collectDescendants(focusNodeId);
 
-  // 3. Direct prerequisites (toNodeId where fromNodeId is in focus or descendants)
+  // 3. Direct dependencies (toNodeId where fromNodeId is in focus or descendants)
   const coreIds = new Set<string>([focusNodeId, ...descendantIds]);
-  const prereqIds = new Set<string>();
+  const dependencyTargetIds = new Set<string>();
   for (const dep of allDeps) {
     if (coreIds.has(dep.fromNodeId)) {
       if (!coreIds.has(dep.toNodeId) && !ancestorIds.has(dep.toNodeId)) {
-        prereqIds.add(dep.toNodeId);
+        dependencyTargetIds.add(dep.toNodeId);
       }
     }
   }
 
-  // 4. Build pruned node collection (ADR 0013)
+  // 4. Request-Mode Tailored Extra Context (docs/request-modes.md)
+  const extraIds = new Set<string>();
+  if (requestMode === 'create_plan' && focusNode.parentId) {
+    // Include peer milestones under the same parent Goal
+    for (const n of allNodes) {
+      if (n.parentId === focusNode.parentId && n.type === 'milestone' && n.id !== focusNodeId) {
+        extraIds.add(n.id);
+      }
+    }
+  } else if (requestMode === 'report_progress') {
+    // Include active / in_progress actions across the goal
+    for (const n of allNodes) {
+      if (n.status === 'in_progress' && (n.type === 'action' || n.type === 'sub_action')) {
+        extraIds.add(n.id);
+      }
+    }
+  }
+
+  // 5. Build pruned node collection (ADR 0013)
   const exportedNodes: Node[] = [];
 
   // Ancestors (skeletal)
@@ -99,8 +119,8 @@ export function extractCausalSubgraph(
     }
   }
 
-  // Prerequisites (metadata)
-  for (const id of prereqIds) {
+  // Dependencies (metadata)
+  for (const id of dependencyTargetIds) {
     const orig = nodeMap.get(id);
     if (orig) {
       exportedNodes.push({
@@ -114,6 +134,26 @@ export function extractCausalSubgraph(
         createdAt: orig.createdAt,
         updatedAt: orig.updatedAt,
       });
+    }
+  }
+
+  // Extra Context nodes (skeletal)
+  for (const id of extraIds) {
+    if (!coreIds.has(id) && !ancestorIds.has(id) && !dependencyTargetIds.has(id)) {
+      const orig = nodeMap.get(id);
+      if (orig) {
+        exportedNodes.push({
+          id: orig.id,
+          workspaceId: orig.workspaceId,
+          type: orig.type,
+          parentId: orig.parentId,
+          title: orig.title,
+          status: orig.status,
+          evidence: [],
+          createdAt: orig.createdAt,
+          updatedAt: orig.updatedAt,
+        });
+      }
     }
   }
 
@@ -156,7 +196,7 @@ ${JSON.stringify(subgraph, null, 2)}
 
 INSTRUCTIONS FOR REQUEST MODE (${requestMode}):
 - If 'create_plan': Decompose the focus node into sequential actions and sub-actions with 'depends_on' edges.
-- If 'task_assistance': Provide execution advice and structured facts in 'advice' or proposed 'add_evidence'.
+- If 'action_assistance' or 'task_assistance': Provide execution advice and structured facts in 'advice' or proposed 'add_evidence'.
 - If 'report_progress': Read user notes, propose 'update_status' to 'done', and create any newly discovered follow-up actions.
 - If 'replan': Adapt remaining actions, remove stale dependencies, and create alternative action paths.
 

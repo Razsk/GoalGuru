@@ -7,7 +7,7 @@ export interface NodeReadinessInfo {
 
 /**
  * Computes dynamic readiness for all nodes based on dependency states (ADR 0003)
- * A node is 'blocked' if any prerequisite node (toNodeId) has status !== 'done'.
+ * A node is 'blocked' if any dependency node (toNodeId) has status !== 'done'.
  * Otherwise, the node is 'ready'.
  */
 export function computeReadiness(
@@ -31,14 +31,14 @@ export function computeReadiness(
   const result = new Map<string, NodeReadinessInfo>();
 
   for (const node of nodes) {
-    const prerequisiteIds = depsByFromNode.get(node.id) || [];
+    const dependencyTargetIds = depsByFromNode.get(node.id) || [];
     const blockingNodeIds: string[] = [];
 
-    for (const prereqId of prerequisiteIds) {
-      const prereqNode = nodeMap.get(prereqId);
-      // If prerequisite doesn't exist or is not done, it blocks this node
-      if (!prereqNode || prereqNode.status !== 'done') {
-        blockingNodeIds.push(prereqId);
+    for (const targetId of dependencyTargetIds) {
+      const targetNode = nodeMap.get(targetId);
+      // If dependency node doesn't exist or is not done, it blocks this node
+      if (!targetNode || targetNode.status !== 'done') {
+        blockingNodeIds.push(targetId);
       }
     }
 

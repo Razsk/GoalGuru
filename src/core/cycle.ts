@@ -18,7 +18,7 @@ export function detectCycle(
   }
 
   // Build adjacency list (toNode -> array of fromNodes that depend on it)
-  // and calculate in-degree (number of prerequisites each fromNode has)
+  // and calculate in-degree (number of incoming dependencies each fromNode has)
   const adjacency = new Map<string, string[]>();
   const inDegree = new Map<string, number>();
   const allNodes = new Set<string>();
@@ -38,7 +38,7 @@ export function detectCycle(
     }
   }
 
-  // Queue of nodes with 0 in-degree (no prerequisites)
+  // Queue of nodes with 0 in-degree (no incoming dependencies)
   const queue: string[] = [];
   for (const node of allNodes) {
     if ((inDegree.get(node) || 0) === 0) {
@@ -72,7 +72,7 @@ export function detectCycle(
   // To find only the nodes in the cycle, backtrack strongly connected components or nodes where all ancestors are unvisited
   const cycleCandidateNodes = Array.from(allNodes).filter((node) => !visited.has(node));
 
-  // Prune downstream leaf nodes that aren't themselves part of the loop
+  // Prune downstream leaf nodes that aren't themselves part of the cycle
   // A node is strictly in a cycle if it can reach itself
   const cycleNodes: string[] = [];
   for (const candidate of cycleCandidateNodes) {

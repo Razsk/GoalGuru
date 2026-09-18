@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { User, Workspace, Node, Dependency, Evidence, NodeType, NodeStatus } from '../core/types.js';
+import { User, Workspace, Node, Dependency, Evidence, NodeType, NodeStatus, isValidParentChild, isValidDependencyType } from '../core/types.js';
 import { Mutation } from '../protocol/types.js';
 import { generateId, generateNodeId } from '../core/id.js';
 import { generateInverseMutations } from '../protocol/changeset.js';
@@ -166,7 +166,20 @@ export class Repository {
     status?: NodeStatus;
     inputs?: string;
     expectedOutputs?: string;
+    actualOutputs?: string;
   }): Node {
+    // Validate hierarchy constraints (ADR 0001 & ADR 0004)
+    let parentType: NodeType | null = null;
+    if (params.parentId) {
+      const parentNode = this.getNode(params.parentId);
+      if (parentNode) {
+        parentType = parentNode.type;
+      }
+    }
+    if (!isValidParentChild(parentType, params.type)) {
+      throw new Error(`Invalid hierarchy: node of type '${params.type}' cannot be child of '${parentType}'.`);
+    }
+
     const id = params.id || generateNodeId(params.type);
     const now = new Date().toISOString();
     const status = params.status || 'todo';
@@ -174,8 +187,8 @@ export class Repository {
 
     this.db
       .prepare(`
-        INSERT INTO nodes (id, workspace_id, type, parent_id, title, description, status, inputs, expected_outputs, version, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO nodes (id, workspace_id, type, parent_id, title, description, status, inputs, expected_outputs, actual_outputs, version, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -187,6 +200,7 @@ export class Repository {
         status,
         params.inputs || null,
         params.expectedOutputs || null,
+        params.actualOutputs || null,
         version,
         now,
         now
@@ -202,6 +216,7 @@ export class Repository {
       status,
       inputs: params.inputs,
       expectedOutputs: params.expectedOutputs,
+      actualOutputs: params.actualOutputs,
       evidence: [],
       createdAt: now,
       updatedAt: now,
@@ -218,15 +233,16 @@ export class Repository {
     const status = updates.status !== undefined ? updates.status : existing.status;
     const inputs = updates.inputs !== undefined ? updates.inputs : existing.inputs;
     const expectedOutputs = updates.expectedOutputs !== undefined ? updates.expectedOutputs : existing.expectedOutputs;
+    const actualOutputs = updates.actualOutputs !== undefined ? updates.actualOutputs : existing.actualOutputs;
     const now = new Date().toISOString();
 
     this.db
       .prepare(`
         UPDATE nodes
-        SET title = ?, description = ?, status = ?, inputs = ?, expected_outputs = ?, version = ?, updated_at = ?
+        SET title = ?, description = ?, status = ?, inputs = ?, expected_outputs = ?, actual_outputs = ?, version = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(title, description || null, status, inputs || null, expectedOutputs || null, newVersion, now, nodeId);
+      .run(title, description || null, status, inputs || null, expectedOutputs || null, actualOutputs || null, newVersion, now, nodeId);
   }
 
   deleteNode(nodeId: string): void {
@@ -313,6 +329,14 @@ export class Repository {
   // --- Dependencies ---
 
   addDependency(workspaceId: string, fromNodeId: string, toNodeId: string): void {
+    const fromNode = this.getNode(fromNodeId);
+    const toNode = this.getNode(toNodeId);
+
+    // Validate dependency target rules (ADR 0001 & ADR 0003)
+    if (fromNode && toNode && !isValidDependencyType(fromNode.type, toNode.type)) {
+      throw new Error(`Invalid dependency: '${fromNode.type}' cannot depend on '${toNode.type}'.`);
+    }
+
     const id = generateId('dep');
     const now = new Date().toISOString();
     this.db
@@ -324,6 +348,10 @@ export class Repository {
     this.db
       .prepare('DELETE FROM dependencies WHERE workspace_id = ? AND from_node_id = ? AND to_node_id = ?')
       .run(workspaceId, fromNodeId, toNodeId);
+  }
+
+  removeEvidence(evidenceId: string): void {
+    this.db.prepare('DELETE FROM evidence WHERE id = ?').run(evidenceId);
   }
 
   listDependencies(workspaceId: string): Dependency[] {
@@ -371,6 +399,65 @@ export class Repository {
     };
   }
 
+  // --- Apply Single Mutation (Deduplicated Dispatch) ---
+
+  applyMutation(workspaceId: string, m: Mutation): void {
+    switch (m.type) {
+      case 'create_node': {
+        this.createNode({
+          workspaceId,
+          id: m.nodeId,
+          type: m.nodeType,
+          parentId: m.parentId || null,
+          title: m.title,
+          description: m.description,
+          inputs: m.inputs,
+          expectedOutputs: m.expectedOutputs,
+          actualOutputs: m.actualOutputs,
+        });
+        break;
+      }
+      case 'update_node': {
+        this.updateNode(m.nodeId, {
+          title: m.title,
+          description: m.description,
+          inputs: m.inputs,
+          expectedOutputs: m.expectedOutputs,
+          actualOutputs: m.actualOutputs,
+        });
+        break;
+      }
+      case 'update_status': {
+        this.updateNode(m.nodeId, { status: m.status });
+        break;
+      }
+      case 'delete_node': {
+        this.deleteNode(m.nodeId);
+        break;
+      }
+      case 'add_dependency': {
+        this.addDependency(workspaceId, m.fromNodeId, m.toNodeId);
+        break;
+      }
+      case 'remove_dependency': {
+        this.removeDependency(workspaceId, m.fromNodeId, m.toNodeId);
+        break;
+      }
+      case 'add_evidence': {
+        const evId = m.evidenceId || generateId('ev');
+        const now = new Date().toISOString();
+        this.db
+          .prepare('INSERT INTO evidence (id, node_id, content, source_url, source_title, retrieved_at, added_by, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(evId, m.nodeId, m.content, m.sourceUrl || null, m.sourceTitle || null, now, 'llm', m.confidence || null);
+        break;
+      }
+      case 'remove_evidence': {
+        this.removeEvidence(m.evidenceId);
+        break;
+      }
+    }
+  }
+
   // --- Commit Proposal & Undo (ADR 0016) ---
 
   commitProposal(params: {
@@ -382,62 +469,14 @@ export class Repository {
     const { workspaceId, baseStateVersion, adviceSummary, mutations } = params;
 
     const currentNodes = this.listNodes(workspaceId);
-    const currentDeps = this.listDependencies(workspaceId);
 
     // Compute inverse mutations before applying (ADR 0016)
-    const inverseMutations = generateInverseMutations(mutations, currentNodes, currentDeps);
+    const inverseMutations = generateInverseMutations(mutations, currentNodes);
 
     this.db.exec('BEGIN TRANSACTION;');
     try {
       for (const m of mutations) {
-        switch (m.type) {
-          case 'create_node': {
-            this.createNode({
-              workspaceId,
-              id: m.nodeId,
-              type: m.nodeType,
-              parentId: m.parentId || null,
-              title: m.title,
-              description: m.description,
-              inputs: m.inputs,
-              expectedOutputs: m.expectedOutputs,
-            });
-            break;
-          }
-          case 'update_node': {
-            this.updateNode(m.nodeId, {
-              title: m.title,
-              description: m.description,
-              inputs: m.inputs,
-              expectedOutputs: m.expectedOutputs,
-            });
-            break;
-          }
-          case 'update_status': {
-            this.updateNode(m.nodeId, { status: m.status });
-            break;
-          }
-          case 'delete_node': {
-            this.deleteNode(m.nodeId);
-            break;
-          }
-          case 'add_dependency': {
-            this.addDependency(workspaceId, m.fromNodeId, m.toNodeId);
-            break;
-          }
-          case 'remove_dependency': {
-            this.removeDependency(workspaceId, m.fromNodeId, m.toNodeId);
-            break;
-          }
-          case 'add_evidence': {
-            const evId = m.evidenceId || generateId('ev');
-            const now = new Date().toISOString();
-            this.db
-              .prepare('INSERT INTO evidence (id, node_id, content, source_url, source_title, retrieved_at, added_by, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-              .run(evId, m.nodeId, m.content, m.sourceUrl || null, m.sourceTitle || null, now, 'llm', m.confidence || null);
-            break;
-          }
-        }
+        this.applyMutation(workspaceId, m);
       }
 
       const newStateVersion = this.incrementStateVersion(workspaceId);
@@ -482,46 +521,7 @@ export class Repository {
     this.db.exec('BEGIN TRANSACTION;');
     try {
       for (const m of inverseMutations) {
-        switch (m.type) {
-          case 'create_node': {
-            this.createNode({
-              workspaceId,
-              id: m.nodeId,
-              type: m.nodeType,
-              parentId: m.parentId || null,
-              title: m.title,
-              description: m.description,
-              inputs: m.inputs,
-              expectedOutputs: m.expectedOutputs,
-            });
-            break;
-          }
-          case 'update_node': {
-            this.updateNode(m.nodeId, {
-              title: m.title,
-              description: m.description,
-              inputs: m.inputs,
-              expectedOutputs: m.expectedOutputs,
-            });
-            break;
-          }
-          case 'update_status': {
-            this.updateNode(m.nodeId, { status: m.status });
-            break;
-          }
-          case 'delete_node': {
-            this.deleteNode(m.nodeId);
-            break;
-          }
-          case 'add_dependency': {
-            this.addDependency(workspaceId, m.fromNodeId, m.toNodeId);
-            break;
-          }
-          case 'remove_dependency': {
-            this.removeDependency(workspaceId, m.fromNodeId, m.toNodeId);
-            break;
-          }
-        }
+        this.applyMutation(workspaceId, m);
       }
 
       this.db.prepare('DELETE FROM proposals_applied WHERE id = ?').run(lastProposal.id);

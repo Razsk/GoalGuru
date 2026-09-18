@@ -101,22 +101,29 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     const user = repo.ensureUser({ id: 'u2', email: 'u2@test.com', displayName: 'U2' });
     const ws = repo.createWorkspace(user.id, 'WS 2');
 
+    const goal = repo.createNode({
+      workspaceId: ws.id,
+      type: 'goal',
+      parentId: null,
+      title: 'Main Goal',
+    });
+
     const action = repo.createNode({
       workspaceId: ws.id,
       type: 'action',
-      parentId: null,
+      parentId: goal.id,
       title: 'Original Title',
       status: 'todo',
     });
 
-    // Assume proposal was exported at stateVersion 1
+    // Assume proposal was exported at stateVersion 2
     const baseVersion = repo.getStateVersion(ws.id);
 
     // User modifies action locally
     repo.updateNode(action.id, { title: 'User Updated Title Locally' });
     expect(repo.getStateVersion(ws.id)).toBe(2);
 
-    // Proposal tries to update the same action based on baseVersion 1
+    // Proposal tries to update the same action based on baseVersion
     const proposalMutations: Mutation[] = [
       {
         type: 'update_node',
@@ -128,5 +135,56 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     const collision = repo.checkCollisions(ws.id, baseVersion, proposalMutations);
     expect(collision.hasCollision).toBe(true);
     expect(collision.collidingNodeIds).toContain(action.id);
+  });
+
+  it('enforces hierarchy rules and rejects invalid parents', () => {
+    const user = repo.ensureUser({ id: 'u3', email: 'u3@test.com', displayName: 'U3' });
+    const ws = repo.createWorkspace(user.id, 'WS 3');
+
+    // Action cannot be top-level root
+    expect(() =>
+      repo.createNode({
+        workspaceId: ws.id,
+        type: 'action',
+        parentId: null,
+        title: 'Invalid Root Action',
+      })
+    ).toThrow(/Invalid hierarchy/);
+  });
+
+  it('supports undoing added evidence (ADR 0016)', () => {
+    const user = repo.ensureUser({ id: 'u4', email: 'u4@test.com', displayName: 'U4' });
+    const ws = repo.createWorkspace(user.id, 'WS 4');
+
+    const goal = repo.createNode({
+      workspaceId: ws.id,
+      type: 'goal',
+      parentId: null,
+      title: 'Research Goal',
+    });
+
+    const mutations: Mutation[] = [
+      {
+        type: 'add_evidence',
+        evidenceId: 'ev_test1',
+        nodeId: goal.id,
+        content: 'Candidate technology: SQLite',
+      },
+    ];
+
+    repo.commitProposal({
+      workspaceId: ws.id,
+      baseStateVersion: 1,
+      mutations,
+    });
+
+    const nodeWithEv = repo.getNode(goal.id);
+    expect(nodeWithEv?.evidence).toHaveLength(1);
+
+    // Undo should remove the evidence
+    repo.undoLastProposal(ws.id);
+
+    const nodeAfterUndo = repo.getNode(goal.id);
+    expect(nodeAfterUndo?.evidence).toHaveLength(0);
   });
 });
