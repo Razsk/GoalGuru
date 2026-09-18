@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Goal Guru — LLM Planning Companion</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <!-- React & Babel for immediate in-browser execution without complex build pipelines -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    function App() {
+      const [user, setUser] = useState(null);
+      const [workspaces, setWorkspaces] = useState([]);
+      const [currentWorkspaceId, setCurrentWorkspaceId] = useState(null);
+      const [graphData, setGraphData] = useState({ nodes: [], dependencies: [], readiness: {}, stateVersion: 1 });
+      const [loading, setLoading] = useState(true);
+
+      // Modals
+      const [exportModalNode, setExportModalNode] = useState(null);
+      const [showImportModal, setShowImportModal] = useState(false);
+      const [showAgentSetupModal, setShowAgentSetupModal] = useState(false);
+      const [showNewGoalModal, setShowNewGoalModal] = useState(false);
+      const [newGoalTitle, setNewGoalTitle] = useState('');
+      const [newGoalDesc, setNewGoalDesc] = useState('');
+
+      // Status toast
+      const [toast, setToast] = useState(null);
+      const showToast = (msg, type = 'success') => {
+        setToast({ msg, type });
+        setTimeout(() => setToast(null), 4000);
+      };
+
+      // Load initial user & workspaces
+      useEffect(() => {
+        async function init() {
+          try {
+            const userRes = await fetch('/api/auth/me');
+            const userData = await userRes.json();
+            setUser(userData);
+
+            const wsRes = await fetch('/api/workspaces');
+            const wsData = await wsRes.json();
+            setWorkspaces(wsData);
+            if (wsData.length > 0) {
+              setCurrentWorkspaceId(wsData[0].id);
+            }
+          } catch (err) {
+            console.error(err);
+            showToast('Failed to load workspaces', 'error');
+          } finally {
+            setLoading(false);
+          }
+        }
+        init();
+      }, []);
+
+      // Load graph when workspace changes
+      const loadGraph = async () => {
+        if (!currentWorkspaceId) return;
+        try {
+          const res = await fetch(`/api/workspaces/${currentWorkspaceId}/graph`);
+          const data = await res.json();
+          setGraphData(data);
+        } catch (err) {
+          console.error(err);
+          showToast('Failed to load graph', 'error');
+        }
+      };
+
+      useEffect(() => {
+        loadGraph();
+      }, [currentWorkspaceId]);
+
+      // Create new top-level goal
+      const handleCreateGoal = async (e) => {
+        e.preventDefault();
+        if (!newGoalTitle.trim() || !currentWorkspaceId) return;
+        try {
+          const res = await fetch(`/api/workspaces/${currentWorkspaceId}/nodes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'goal',
+              title: newGoalTitle,
+              description: newGoalDesc,
+              status: 'in_progress'
+            }),
+          });
+          if (res.ok) {
+            showToast('Goal created successfully!');
+            setNewGoalTitle('');
+            setNewGoalDesc('');
+            setShowNewGoalModal(false);
+            loadGraph();
+          }
+        } catch (err) {
+          showToast('Failed to create goal', 'error');
+        }
+      };
+
+      // Toggle status
+      const handleToggleStatus = async (node) => {
+        const nextStatus = node.status === 'todo' ? 'in_progress' : node.status === 'in_progress' ? 'done' : 'todo';
+        try {
+          await fetch(`/api/nodes/${node.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: nextStatus })
+          });
+          loadGraph();
+        } catch (err) {
+          showToast('Failed to update status', 'error');
+        }
+      };
+
+      // Delete node
+      const handleDeleteNode = async (nodeId) => {
+        if (!confirm('Are you sure you want to delete this node and its sub-items?')) return;
+        try {
+          await fetch(`/api/nodes/${nodeId}`, { method: 'DELETE' });
+          showToast('Node deleted');
+          loadGraph();
+        } catch (err) {
+          showToast('Failed to delete node', 'error');
+        }
+      };
+
+      // Undo
+      const handleUndo = async () => {
+        try {
+          const res = await fetch(`/api/workspaces/${currentWorkspaceId}/undo`, { method: 'POST' });
+          const data = await res.json();
+          if (data.success) {
+            showToast('Undid last plan changes!');
+            loadGraph();
+          } else {
+            showToast('No proposals to undo', 'info');
+          }
+        } catch (err) {
+          showToast('Undo failed', 'error');
+        }
+      };
+
+      // Tree structure helper
+      const tree = useMemo(() => {
+        const nodeMap = new Map();
+        const roots = [];
+
+        graphData.nodes.forEach(n => {
+          nodeMap.set(n.id, { ...n, children: [] });
+        });
+
+        graphData.nodes.forEach(n => {
+          const item = nodeMap.get(n.id);
+          if (n.parentId && nodeMap.has(n.parentId)) {
+            nodeMap.get(n.parentId).children.push(item);
+          } else {
+            roots.push(item);
+          }
+        });
+
+        return roots;
+      }, [graphData.nodes]);
+
+      return (
+        <div className="flex flex-col min-h-screen">
+          {/* Header */}
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-brand-600 text-white flex items-center justify-center font-bold text-xl shadow-md">
+                  <i className="fa-solid fa-compass"></i>
+                </div>
+                <div>
+                  <h1 className="text-xl font-black tracking-tight text-slate-900">Goal Guru</h1>
+                  <span className="text-xs font-semibold uppercase tracking-wider text-brand-600 bg-brand-50 px-2 py-0.5 rounded">
+                    Companion v1.0
+                  </span>
+                </div>
+              </div>
+
+              {/* Workspace Selector & State Version */}
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+                  <i className="fa-solid fa-layer-group text-slate-500 text-sm"></i>
+                  <select 
+                    value={currentWorkspaceId || ''} 
+                    onChange={(e) => setCurrentWorkspaceId(e.target.value)}
+                    className="bg-transparent text-sm font-medium text-slate-800 outline-none cursor-pointer"
+                  >
+                    {workspaces.map(ws => (
+                      <option key={ws.id} value={ws.id}>{ws.name}</option>
+                    ))}
+                  </select>
+                  <span className="text-xs font-mono bg-white px-2 py-0.5 rounded text-slate-600 border border-slate-200">
+                    v{graphData.stateVersion}
+                  </span>
+                </div>
+
+                {/* Actions */}
+                <button 
+                  onClick={handleUndo} 
+                  title="Undo last proposal commit"
+                  className="px-3 py-1.5 text-sm font-medium text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg flex items-center space-x-1.5 transition shadow-sm"
+                >
+                  <i className="fa-solid fa-rotate-left text-xs"></i>
+                  <span>Undo</span>
+                </button>
+
+                <button 
+                  onClick={() => setShowAgentSetupModal(true)}
+                  className="px-3 py-1.5 text-sm font-medium text-slate-700 hover:text-brand-600 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg flex items-center space-x-1.5 transition shadow-sm"
+                >
+                  <i className="fa-solid fa-robot text-xs"></i>
+                  <span>Setup Agent</span>
+                </button>
+
+                {/* User badge */}
+                <div className="flex items-center space-x-2 pl-2 border-l border-slate-200">
+                  <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-xs">
+                    {user?.displayName?.[0] || 'U'}
+                  </div>
+                  <div className="hidden sm:block text-left text-xs">
+                    <p className="font-semibold text-slate-800">{user?.displayName}</p>
+                    <p className="text-slate-500 font-mono text-[10px]">Google Auth</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          {/* Main Content */}
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            {/* Top Toolbar */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">Active Execution Plan</h2>
+                <p className="text-sm text-slate-600 mt-1">
+                  The application owns truth; export subgraphs to your LLM advisor and paste proposals back.
+                </p>
+              </div>
+              <div className="flex items-center space-x-3">
+                <button
+                  onClick={() => setShowImportModal(true)}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium text-sm flex items-center space-x-2 shadow transition"
+                >
+                  <i className="fa-solid fa-clipboard-check"></i>
+                  <span>Import Proposal</span>
+                </button>
+                <button
+                  onClick={() => setShowNewGoalModal(true)}
+                  className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-medium text-sm flex items-center space-x-2 shadow transition"
+                >
+                  <i className="fa-solid fa-plus"></i>
+                  <span>New Goal</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Tree Container */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+              {tree.length === 0 ? (
+                <div className="text-center py-16">
+                  <div className="w-16 h-16 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-2xl mx-auto mb-4">
+                    <i className="fa-solid fa-bullseye"></i>
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-800">No goals defined yet</h3>
+                  <p className="text-slate-500 text-sm max-w-sm mx-auto mt-1 mb-6">
+                    Define your first goal to begin planning and collaborating with your LLM advisor.
+                  </p>
+                  <button
+                    onClick={() => setShowNewGoalModal(true)}
+                    className="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-medium text-sm inline-flex items-center space-x-2 shadow"
+                  >
+                    <i className="fa-solid fa-plus"></i>
+                    <span>Create Your First Goal</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {tree.map(node => (
+                    <NodeItem 
+                      key={node.id} 
+                      node={node} 
+                      readinessMap={graphData.readiness} 
+                      onExport={(n) => setExportModalNode(n)}
+                      onToggleStatus={handleToggleStatus}
+                      onDelete={handleDeleteNode}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </main>
+
+          {/* Toast Message */}
+          {toast && (
+            <div className={`fixed bottom-6 right-6 px-4 py-3 rounded-xl shadow-lg border text-sm font-medium flex items-center space-x-2 z-50 transition-all ${
+              toast.type === 'error' ? 'bg-red-50 text-red-900 border-red-200' : 
+              toast.type === 'info' ? 'bg-blue-50 text-blue-900 border-blue-200' : 
+              'bg-emerald-50 text-emerald-900 border-emerald-200'
+            }`}>
+              <i className={`fa-solid ${toast.type === 'error' ? 'fa-circle-exclamation' : 'fa-circle-check'}`}></i>
+              <span>{toast.msg}</span>
+            </div>
+          )}
+
+          {/* New Goal Modal */}
+          {showNewGoalModal && (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+                <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+                  <h3 className="text-lg font-bold text-slate-900">Create New Goal</h3>
+                  <button onClick={() => setShowNewGoalModal(false)} className="text-slate-400 hover:text-slate-600">
+                    <i className="fa-solid fa-xmark text-lg"></i>
+                  </button>
+                </div>
+                <form onSubmit={handleCreateGoal} className="mt-4 space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Goal Title</label>
+                    <input 
+                      type="text" 
+                      required 
+                      placeholder="e.g. Launch SaaS Product MVP"
+                      value={newGoalTitle}
+                      onChange={(e) => setNewGoalTitle(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Description / Target Outcome</label>
+                    <textarea 
+                      rows="3" 
+                      placeholder="Describe what success looks like..."
+                      value={newGoalDesc}
+                      onChange={(e) => setNewGoalDesc(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    />
+                  </div>
+                  <div className="flex justify-end space-x-2 pt-2">
+                    <button 
+                      type="button" 
+                      onClick={() => setShowNewGoalModal(false)} 
+                      className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button 
+                      type="submit" 
+                      className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-medium shadow"
+                    >
+                      Create Goal
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Export to LLM Modal */}
+          {exportModalNode && (
+            <ExportModal 
+              node={exportModalNode} 
+              workspaceId={currentWorkspaceId}
+              onClose={() => setExportModalNode(null)} 
+              showToast={showToast}
+            />
+          )}
+
+          {/* Import Proposal Modal */}
+          {showImportModal && (
+            <ImportModal 
+              workspaceId={currentWorkspaceId}
+              onClose={() => setShowImportModal(false)}
+              onSuccess={() => {
+                setShowImportModal(false);
+                loadGraph();
+              }}
+              showToast={showToast}
+            />
+          )}
+
+          {/* Agent Setup Modal */}
+          {showAgentSetupModal && (
+            <AgentSetupModal onClose={() => setShowAgentSetupModal(false)} showToast={showToast} />
+          )}
+        </div>
+      );
+    }
+
+    // Node Item Recursive Component
+    function NodeItem({ node, readinessMap, onExport, onToggleStatus, onDelete }) {
+      const [collapsed, setCollapsed] = useState(false);
+      const readinessInfo = readinessMap?.[node.id];
+      const isBlocked = readinessInfo?.readiness === 'blocked';
+
+      // Type styling
+      const typeStyles = {
+        goal: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+        sub_goal: 'bg-blue-100 text-blue-800 border-blue-200',
+        milestone: 'bg-purple-100 text-purple-800 border-purple-200',
+        action: 'bg-sky-100 text-sky-800 border-sky-200',
+        sub_action: 'bg-slate-100 text-slate-800 border-slate-200',
+      };
+
+      // Status styling
+      const statusStyles = {
+        todo: 'bg-slate-100 text-slate-700 hover:bg-slate-200',
+        in_progress: 'bg-amber-100 text-amber-800 hover:bg-amber-200',
+        done: 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200',
+        abandoned: 'bg-rose-100 text-rose-800',
+      };
+
+      return (
+        <div className="border border-slate-200 rounded-xl bg-slate-50/50 p-3 hover:border-slate-300 transition">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center space-x-2.5 flex-1 min-w-0">
+              {node.children.length > 0 ? (
+                <button onClick={() => setCollapsed(!collapsed)} className="text-slate-400 hover:text-slate-600 w-5 text-center">
+                  <i className={`fa-solid fa-chevron-${collapsed ? 'right' : 'down'} text-xs`}></i>
+                </button>
+              ) : (
+                <span className="w-5 text-slate-300 text-center">•</span>
+              )}
+
+              {/* Status toggle button */}
+              <button 
+                onClick={() => onToggleStatus(node)}
+                title="Click to advance status"
+                className={`px-2 py-0.5 rounded text-xs font-semibold border transition ${statusStyles[node.status]}`}
+              >
+                {node.status.replace('_', ' ')}
+              </button>
+
+              {/* Type Badge */}
+              <span className={`px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider border ${typeStyles[node.type]}`}>
+                {node.type.replace('_', ' ')}
+              </span>
+
+              {/* Title & Description */}
+              <div className="truncate">
+                <span className={`font-semibold text-sm ${node.status === 'done' ? 'line-through text-slate-400' : 'text-slate-900'}`}>
+                  {node.title}
+                </span>
+                {node.description && (
+                  <span className="text-xs text-slate-500 ml-2 font-normal truncate hidden md:inline">
+                    — {node.description}
+                  </span>
+                )}
+              </div>
+
+              {/* Dynamic Readiness Badge (ADR 0003) */}
+              {isBlocked && (
+                <span className="px-2 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded text-xs font-medium flex items-center space-x-1" title={`Blocked by: ${readinessInfo.blockingNodeIds.join(', ')}`}>
+                  <i className="fa-solid fa-lock text-[10px]"></i>
+                  <span>Blocked</span>
+                </span>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center space-x-1">
+              <button 
+                onClick={() => onExport(node)} 
+                title="Export context to LLM"
+                className="px-2.5 py-1 text-xs font-medium bg-brand-50 hover:bg-brand-100 text-brand-700 rounded-lg flex items-center space-x-1 border border-brand-200 transition"
+              >
+                <i className="fa-solid fa-paper-plane text-[10px]"></i>
+                <span>Ask AI</span>
+              </button>
+
+              <button 
+                onClick={() => onDelete(node.id)}
+                className="text-slate-400 hover:text-red-600 p-1.5 rounded transition"
+                title="Delete node"
+              >
+                <i className="fa-solid fa-trash text-xs"></i>
+              </button>
+            </div>
+          </div>
+
+          {/* Children */}
+          {!collapsed && node.children.length > 0 && (
+            <div className="pl-6 pt-3 space-y-2 border-l-2 border-slate-200 ml-3.5 mt-2">
+              {node.children.map(child => (
+                <NodeItem 
+                  key={child.id} 
+                  node={child} 
+                  readinessMap={readinessMap} 
+                  onExport={onExport} 
+                  onToggleStatus={onToggleStatus} 
+                  onDelete={onDelete} 
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Export Context Modal
+    function ExportModal({ node, workspaceId, onClose, showToast }) {
+      const [requestMode, setRequestMode] = useState('create_plan');
+      const [userNote, setUserNote] = useState('');
+      const [generatedPrompt, setGeneratedPrompt] = useState('');
+      const [copied, setCopied] = useState(false);
+      const [loading, setLoading] = useState(true);
+
+      const fetchPrompt = async () => {
+        setLoading(true);
+        try {
+          const res = await fetch(`/api/workspaces/${workspaceId}/export`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              focusNodeId: node.id,
+              requestMode,
+              userNote
+            })
+          });
+          const data = await res.json();
+          setGeneratedPrompt(data.prompt);
+        } catch (err) {
+          showToast('Failed to generate prompt', 'error');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      useEffect(() => {
+        fetchPrompt();
+      }, [requestMode, node.id]);
+
+      const handleCopy = () => {
+        navigator.clipboard.writeText(generatedPrompt);
+        setCopied(true);
+        showToast('Prompt copied to clipboard! Paste it into ChatGPT, Claude, or Gemini.');
+        setTimeout(() => setCopied(false), 2500);
+      };
+
+      return (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                  <i className="fa-solid fa-paper-plane text-brand-600"></i>
+                  <span>Export to LLM Advisor</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">Focused on: <span className="font-semibold text-slate-700">{node.title}</span></p>
+              </div>
+              <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+                <i className="fa-solid fa-xmark text-lg"></i>
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4 flex-1 overflow-y-auto custom-scrollbar pr-1">
+              {/* Request Mode Selection */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Request Mode (Intent)
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    { id: 'create_plan', label: 'Create Plan', icon: 'fa-sitemap' },
+                    { id: 'task_assistance', label: 'Task Assist', icon: 'fa-lightbulb' },
+                    { id: 'report_progress', label: 'Report Progress', icon: 'fa-check-double' },
+                    { id: 'replan', label: 'Replan', icon: 'fa-arrows-rotate' },
+                  ].map(mode => (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => setRequestMode(mode.id)}
+                      className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center space-y-1 transition ${
+                        requestMode === mode.id 
+                          ? 'bg-brand-50 border-brand-500 text-brand-700 font-bold shadow-sm' 
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <i className={`fa-solid ${mode.icon} text-base`}></i>
+                      <span>{mode.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Optional User Note */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Optional Instructions for LLM
+                </label>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder="e.g. Focus on low-cost options, or break into 3 small steps..."
+                    value={userNote}
+                    onChange={(e) => setUserNote(e.target.value)}
+                    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  />
+                  <button 
+                    onClick={fetchPrompt}
+                    className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition"
+                  >
+                    Refresh
+                  </button>
+                </div>
+              </div>
+
+              {/* Prompt Preview */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                    Clipboard Envelope Preview (Asymmetric Causal Path)
+                  </span>
+                  <span className="text-[11px] text-slate-400">Contains boundary markers & passive framing</span>
+                </div>
+                <pre className="bg-slate-900 text-slate-100 p-3.5 rounded-xl text-xs font-mono overflow-x-auto max-h-60 custom-scrollbar whitespace-pre-wrap">
+                  {loading ? 'Generating causal context...' : generatedPrompt}
+                </pre>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-between pt-4 border-t border-slate-100 mt-4">
+              <span className="text-xs text-slate-500">
+                After copying, paste into your LLM, then click <strong>Import Proposal</strong> when it responds.
+              </span>
+              <div className="flex space-x-2">
+                <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg font-medium">
+                  Close
+                </button>
+                <button 
+                  onClick={handleCopy}
+                  className="px-5 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-medium shadow flex items-center space-x-2"
+                >
+                  <i className={`fa-solid ${copied ? 'fa-check' : 'fa-copy'}`}></i>
+                  <span>{copied ? 'Copied!' : 'Copy to Clipboard'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Import Proposal Modal
+    function ImportModal({ workspaceId, onClose, onSuccess, showToast }) {
+      const [rawText, setRawText] = useState('');
+      const [parsedProposal, setParsedProposal] = useState(null);
+      const [selectedKeys, setSelectedKeys] = useState(new Set());
+      const [analyzing, setAnalyzing] = useState(false);
+      const [committing, setCommitting] = useState(false);
+
+      const handleAnalyze = async () => {
+        if (!rawText.trim()) return;
+        setAnalyzing(true);
+        try {
+          const res = await fetch(`/api/workspaces/${workspaceId}/parse-proposal`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rawText })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error);
+
+          setParsedProposal(data);
+
+          // Select all mutations by default
+          const keys = new Set();
+          data.changeSet.forEach((m, idx) => {
+            const key = m.tempId || m.nodeId || `mut_${idx}`;
+            keys.add(key);
+          });
+          setSelectedKeys(keys);
+          showToast('Proposal parsed successfully!');
+        } catch (err) {
+          showToast(err.message || 'Failed to parse proposal', 'error');
+        } finally {
+          setAnalyzing(false);
+        }
+      };
+
+      // Toggle individual checkbox with cascading deselection (ADR 0005)
+      const toggleMutationKey = (key) => {
+        const next = new Set(selectedKeys);
+        if (next.has(key)) {
+          next.delete(key);
+          // Auto cascade: remove any sub-action that had this node as parent
+          parsedProposal.changeSet.forEach(m => {
+            if (m.type === 'create_node' && m.parentId === key) {
+              const childKey = m.tempId || m.nodeId;
+              if (childKey) next.delete(childKey);
+            }
+          });
+        } else {
+          next.add(key);
+        }
+        setSelectedKeys(next);
+      };
+
+      const handleCommit = async () => {
+        if (!parsedProposal) return;
+        setCommitting(true);
+        try {
+          const activeMutations = parsedProposal.changeSet.filter((m, idx) => {
+            const key = m.tempId || m.nodeId || `mut_${idx}`;
+            return selectedKeys.has(key);
+          });
+
+          const res = await fetch(`/api/workspaces/${workspaceId}/commit-proposal`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              baseStateVersion: parsedProposal.stateVersion,
+              adviceSummary: parsedProposal.advice?.summary,
+              selectedMutations: activeMutations
+            })
+          });
+
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error);
+
+          showToast(`Applied ${activeMutations.length} mutations! Plan advanced to v${data.newStateVersion}`);
+          onSuccess();
+        } catch (err) {
+          showToast(err.message || 'Commit failed', 'error');
+        } finally {
+          setCommitting(false);
+        }
+      };
+
+      return (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                  <i className="fa-solid fa-clipboard-check text-emerald-600"></i>
+                  <span>Import Proposal from Clipboard</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">Paste the entire response from your LLM below</p>
+              </div>
+              <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+                <i className="fa-solid fa-xmark text-lg"></i>
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4 flex-1 overflow-y-auto custom-scrollbar pr-1">
+              {!parsedProposal ? (
+                <div>
+                  <textarea
+                    rows="8"
+                    placeholder="Paste full text containing ```goalguru-proposal ... ```"
+                    value={rawText}
+                    onChange={(e) => setRawText(e.target.value)}
+                    className="w-full p-3 border border-slate-300 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 custom-scrollbar"
+                  />
+                  <div className="flex justify-end mt-2">
+                    <button
+                      onClick={handleAnalyze}
+                      disabled={analyzing || !rawText.trim()}
+                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-medium shadow flex items-center space-x-2 disabled:opacity-50"
+                    >
+                      <i className="fa-solid fa-magnifying-glass"></i>
+                      <span>{analyzing ? 'Analyzing...' : 'Analyze Proposal'}</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Collision Warning (ADR 0004) */}
+                  {parsedProposal.hasCollision && (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs">
+                      <p className="font-bold flex items-center space-x-1.5">
+                        <i className="fa-solid fa-triangle-exclamation text-amber-600"></i>
+                        <span>Touch-Set Collision Detected</span>
+                      </p>
+                      <p className="mt-1">
+                        Local changes occurred on nodes [{parsedProposal.collidingNodeIds.join(', ')}] since this proposal was generated (Exported at v{parsedProposal.stateVersion}, Workspace currently at v{parsedProposal.currentWorkspaceVersion}). Please review checkboxes carefully.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Cycle Warning (ADR 0012) */}
+                  {parsedProposal.hasCycle && (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-900 text-xs">
+                      <p className="font-bold flex items-center space-x-1.5">
+                        <i className="fa-solid fa-circle-exclamation text-red-600"></i>
+                        <span>Circular Dependency Detected</span>
+                      </p>
+                      <p className="mt-1">
+                        Cycle path: {parsedProposal.cycleNodes.join(' → ')}. Cyclic edges should be unchecked.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Advisory Section (ADR 0008) */}
+                  {parsedProposal.advice && (
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-500">LLM Advisory Summary</span>
+                      {parsedProposal.advice.summary && (
+                        <p className="text-sm font-semibold text-slate-900">{parsedProposal.advice.summary}</p>
+                      )}
+                      {parsedProposal.advice.critique && (
+                        <p className="text-xs text-slate-600"><strong className="text-slate-800">Critique:</strong> {parsedProposal.advice.critique}</p>
+                      )}
+                      {parsedProposal.advice.nextSteps && (
+                        <p className="text-xs text-slate-600"><strong className="text-slate-800">Next Steps:</strong> {parsedProposal.advice.nextSteps}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Mutations Review Checklist */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                        Proposed Mutations ({parsedProposal.changeSet.length})
+                      </span>
+                      <span className="text-[11px] text-slate-500">Deselecting a parent auto-prunes children</span>
+                    </div>
+
+                    <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar pr-1">
+                      {parsedProposal.changeSet.map((m, idx) => {
+                        const key = m.tempId || m.nodeId || `mut_${idx}`;
+                        const isChecked = selectedKeys.has(key);
+
+                        return (
+                          <label 
+                            key={idx} 
+                            className={`flex items-start space-x-3 p-2.5 rounded-xl border text-xs cursor-pointer transition ${
+                              isChecked ? 'bg-white border-emerald-300 shadow-sm' : 'bg-slate-50 border-slate-200 opacity-60'
+                            }`}
+                          >
+                            <input 
+                              type="checkbox" 
+                              checked={isChecked}
+                              onChange={() => toggleMutationKey(key)}
+                              className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                            />
+                            <div className="flex-1">
+                              <div className="flex items-center space-x-2">
+                                <span className="font-mono font-bold text-slate-800 uppercase text-[10px] bg-slate-100 px-1.5 py-0.5 rounded">
+                                  {m.type.replace('_', ' ')}
+                                </span>
+                                <span className="font-semibold text-slate-900">
+                                  {m.title || m.nodeId || m.content || `${m.fromNodeId} → ${m.toNodeId}`}
+                                </span>
+                              </div>
+                              {m.description && <p className="text-slate-500 text-[11px] mt-0.5">{m.description}</p>}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between pt-4 border-t border-slate-100 mt-4">
+              {parsedProposal ? (
+                <button
+                  onClick={() => { setParsedProposal(null); setRawText(''); }}
+                  className="text-xs text-slate-500 hover:text-slate-700 font-medium"
+                >
+                  ← Paste different proposal
+                </button>
+              ) : <div></div>}
+
+              <div className="flex space-x-2">
+                <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg font-medium">
+                  Cancel
+                </button>
+                {parsedProposal && (
+                  <button 
+                    onClick={handleCommit}
+                    disabled={committing || selectedKeys.size === 0}
+                    className="px-5 py-2 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium shadow flex items-center space-x-2 disabled:opacity-50"
+                  >
+                    <i className="fa-solid fa-check"></i>
+                    <span>{committing ? 'Committing...' : `Commit ${selectedKeys.size} Changes to Plan`}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Agent Setup Modal (ADR 0017)
+    function AgentSetupModal({ onClose, showToast }) {
+      const [prompt, setPrompt] = useState('');
+      const [copied, setCopied] = useState(false);
+
+      useEffect(() => {
+        fetch('/api/agent-system-prompt')
+          .then(r => r.json())
+          .then(d => setPrompt(d.prompt))
+          .catch(() => showToast('Failed to load system prompt', 'error'));
+      }, []);
+
+      const handleCopy = () => {
+        navigator.clipboard.writeText(prompt);
+        setCopied(true);
+        showToast('System prompt copied to clipboard!');
+        setTimeout(() => setCopied(false), 2500);
+      };
+
+      return (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                <i className="fa-solid fa-robot text-brand-600"></i>
+                <span>Configure Persistent Custom Agent</span>
+              </h3>
+              <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+                <i className="fa-solid fa-xmark text-lg"></i>
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 flex-1 overflow-y-auto custom-scrollbar pr-1">
+              <p className="text-xs text-slate-600">
+                Copy this system prompt and paste it into the <strong>Instructions</strong> box when creating a <strong>Custom GPT (ChatGPT)</strong>, a <strong>Claude Project</strong>, or a <strong>Gemini Gem</strong>. This configures the agent to communicate strictly via Goal Guru JSON proposals.
+              </p>
+              <pre className="bg-slate-900 text-slate-100 p-4 rounded-xl text-xs font-mono overflow-x-auto max-h-72 custom-scrollbar whitespace-pre-wrap">
+                {prompt}
+              </pre>
+            </div>
+
+            <div className="flex justify-end space-x-2 pt-4 border-t border-slate-100 mt-4">
+              <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg font-medium">
+                Close
+              </button>
+              <button 
+                onClick={handleCopy}
+                className="px-5 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-medium shadow flex items-center space-x-2"
+              >
+                <i className={`fa-solid ${copied ? 'fa-check' : 'fa-copy'}`}></i>
+                <span>{copied ? 'Copied!' : 'Copy System Instructions'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

@@ -23,3 +23,9 @@ dist/
 build/
 .next/
 out/
+
+# Database files
+data/
+*.db
+*.db-wal
+*.db-shm
