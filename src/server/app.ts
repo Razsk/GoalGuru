@@ -1,5 +1,6 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import { execSync } from 'node:child_process';
 import { Repository } from '../storage/repository.js';
 import { extractProposalFromText, parseProposalEnvelope } from '../protocol/parser.js';
 import { resolveTemporaryIds, pruneDeselectedMutations, getMutationKey } from '../protocol/changeset.js';
@@ -149,6 +150,46 @@ export function buildApp(options: AppOptions): FastifyInstance {
   app.delete('/api/nodes/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     repo.deleteNode(id);
+    return { success: true };
+  });
+
+  // --- Evidence ---
+  app.post('/api/nodes/:id/evidence', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as {
+      content?: string;
+      sourceUrl?: string;
+      sourceTitle?: string;
+      confidence?: 'high' | 'medium' | 'low';
+    };
+
+    if (!body?.content || !body.content.trim()) {
+      return reply.status(400).send({ error: 'Evidence content is required.' });
+    }
+
+    const node = repo.getNode(id);
+    if (!node) {
+      return reply.status(404).send({ error: `Node '${id}' not found.` });
+    }
+
+    const evidence = repo.addEvidence({
+      nodeId: id,
+      content: body.content.trim(),
+      sourceUrl: body.sourceUrl?.trim() || undefined,
+      sourceTitle: body.sourceTitle?.trim() || undefined,
+      confidence: body.confidence,
+      addedBy: 'user',
+    });
+
+    return reply.status(201).send(evidence);
+  });
+
+  app.delete('/api/evidence/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const deleted = repo.removeEvidence(id);
+    if (!deleted) {
+      return reply.status(404).send({ error: `Evidence '${id}' not found.` });
+    }
     return { success: true };
   });
 
@@ -351,14 +392,88 @@ export function buildApp(options: AppOptions): FastifyInstance {
     return { errors };
   });
 
+  app.get('/api/errors/stats', async () => {
+    const stats = repo.getErrorStats();
+    return stats;
+  });
+
+  app.get('/api/errors/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const err = repo.getError(id);
+    if (!err) {
+      return reply.status(404).send({ error: `Error '${id}' not found.` });
+    }
+    return err;
+  });
+
   app.patch('/api/errors/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = req.body as { status: 'unresolved' | 'resolved' | 'ignored' };
+    const body = req.body as {
+      status: 'unresolved' | 'in_progress' | 'resolved' | 'ignored';
+      fixNotes?: string;
+    };
     if (!body?.status) {
       return reply.status(400).send({ error: 'status is required.' });
     }
-    const success = repo.markErrorStatus(id, body.status);
-    return { success };
+    const success = repo.markErrorStatus(id, body.status, body.fixNotes);
+    return { success, error: repo.getError(id) };
+  });
+
+  // Verify fix by running test suite and type checking
+  app.post('/api/errors/verify', async (req) => {
+    const body = (req.body || {}) as { command?: string };
+    const startTime = Date.now();
+    try {
+      if (body.command) {
+        const cmdOutput = execSync(body.command, {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        return {
+          success: true,
+          commandPassed: true,
+          durationMs: Date.now() - startTime,
+          message: `Command '${body.command}' passed cleanly.`,
+          output: cmdOutput.slice(-800),
+        };
+      }
+      const testOutput = execSync('npm test', {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const typecheckOutput = execSync('npm run typecheck', {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return {
+        success: true,
+        testsPassed: true,
+        typecheckPassed: true,
+        durationMs: Date.now() - startTime,
+        message: 'All tests and type checks passed cleanly.',
+        testOutput: testOutput.slice(-800),
+        typecheckOutput: typecheckOutput.slice(-800),
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        testsPassed: false,
+        durationMs: Date.now() - startTime,
+        message: 'Verification failed: tests or command reported errors.',
+        error: err.message,
+        stdout: (err.stdout || '').toString().slice(-800),
+        stderr: (err.stderr || '').toString().slice(-800),
+      };
+    }
+  });
+
+  app.post('/api/errors/clear-resolved', async (req) => {
+    const body = (req.body || {}) as { keepRecentDays?: number };
+    repo.clearResolvedErrors(body.keepRecentDays);
+    return { success: true };
   });
 
   app.delete('/api/errors', async () => {

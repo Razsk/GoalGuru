@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { User, Workspace, Node, Dependency, Evidence, NodeType, NodeStatus, isValidParentChild, isValidDependencyType } from '../core/types.js';
+import { User, Workspace, Node, Dependency, Evidence, EvidenceConfidence, EvidenceSourceType, NodeType, NodeStatus, isValidParentChild, isValidDependencyType } from '../core/types.js';
 import { Mutation } from '../protocol/types.js';
 import { generateId, generateNodeId } from '../core/id.js';
 import { generateInverseMutations } from '../protocol/changeset.js';
@@ -97,10 +97,19 @@ export class Repository {
         stack TEXT,
         context_json TEXT,
         status TEXT NOT NULL DEFAULT 'unresolved',
+        fix_notes TEXT,
+        resolved_at TEXT,
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_dev_errors_status ON dev_errors(status);
     `);
+
+    try {
+      this.db.exec('ALTER TABLE dev_errors ADD COLUMN fix_notes TEXT;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE dev_errors ADD COLUMN resolved_at TEXT;');
+    } catch {}
   }
 
   // --- Users & Workspaces ---
@@ -362,8 +371,66 @@ export class Repository {
       .run(workspaceId, fromNodeId, toNodeId);
   }
 
-  removeEvidence(evidenceId: string): void {
+  addEvidence(params: {
+    nodeId: string;
+    content: string;
+    sourceUrl?: string;
+    sourceTitle?: string;
+    confidence?: EvidenceConfidence;
+    addedBy?: EvidenceSourceType;
+  }): Evidence {
+    const node = this.getNode(params.nodeId);
+    if (!node) {
+      throw new Error(`Node '${params.nodeId}' not found.`);
+    }
+
+    const evId = generateId('ev');
+    const now = new Date().toISOString();
+    const addedBy: EvidenceSourceType = params.addedBy || 'user';
+    const confidence = params.confidence || null;
+
+    this.db
+      .prepare(
+        'INSERT INTO evidence (id, node_id, content, source_url, source_title, retrieved_at, added_by, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(
+        evId,
+        params.nodeId,
+        params.content,
+        params.sourceUrl || null,
+        params.sourceTitle || null,
+        now,
+        addedBy,
+        confidence
+      );
+
+    this.incrementStateVersion(node.workspaceId);
+
+    return {
+      id: evId,
+      content: params.content,
+      sourceUrl: params.sourceUrl,
+      sourceTitle: params.sourceTitle,
+      retrievedAt: now,
+      addedBy,
+      confidence: params.confidence,
+    };
+  }
+
+  removeEvidence(evidenceId: string): boolean {
+    const row = this.db
+      .prepare('SELECT node_id as nodeId FROM evidence WHERE id = ?')
+      .get(evidenceId) as unknown as { nodeId: string } | undefined;
+
+    if (!row) return false;
+
+    const node = this.getNode(row.nodeId);
     this.db.prepare('DELETE FROM evidence WHERE id = ?').run(evidenceId);
+
+    if (node) {
+      this.incrementStateVersion(node.workspaceId);
+    }
+    return true;
   }
 
   listDependencies(workspaceId: string): Dependency[] {
@@ -416,10 +483,24 @@ export class Repository {
   applyMutation(workspaceId: string, m: Mutation): void {
     switch (m.type) {
       case 'create_node': {
+        let nodeType = m.nodeType;
+        if (m.parentId) {
+          const parent = this.getNode(m.parentId);
+          if (parent) {
+            if ((parent.type === 'action' || parent.type === 'sub_action') && nodeType === 'action') {
+              nodeType = 'sub_action';
+            } else if (
+              (parent.type === 'goal' || parent.type === 'sub_goal' || parent.type === 'milestone') &&
+              nodeType === 'sub_action'
+            ) {
+              nodeType = 'action';
+            }
+          }
+        }
         this.createNode({
           workspaceId,
           id: m.nodeId,
-          type: m.nodeType,
+          type: nodeType,
           parentId: m.parentId || null,
           title: m.title,
           description: m.description,
@@ -532,11 +613,32 @@ export class Repository {
       fallbackGoalId = autoCreatedGoal.id;
     }
 
-    // Attach any orphans to the fallback goal
+    // Map existing nodes and newly proposed nodes to their types for hierarchy validation
+    const idToTypeMap = new Map<string, NodeType>();
+    for (const n of currentNodes) {
+      idToTypeMap.set(n.id, n.type);
+    }
+    if (autoCreatedGoal) {
+      idToTypeMap.set(autoCreatedGoal.id, autoCreatedGoal.type);
+    }
+
+    // Attach any orphans to the fallback goal and conform node types to valid hierarchy
     for (const m of orderedMutations) {
       if (m.type === 'create_node' && m.nodeType !== 'goal') {
         if (!m.parentId || (!proposedNodeIds.has(m.parentId) && !existingNodeIds.has(m.parentId))) {
           m.parentId = fallbackGoalId!;
+        }
+        const parentType = m.parentId ? idToTypeMap.get(m.parentId) : null;
+        if ((parentType === 'action' || parentType === 'sub_action') && m.nodeType === 'action') {
+          m.nodeType = 'sub_action';
+        } else if (
+          (parentType === 'goal' || parentType === 'sub_goal' || parentType === 'milestone') &&
+          m.nodeType === 'sub_action'
+        ) {
+          m.nodeType = 'action';
+        }
+        if (m.nodeId) {
+          idToTypeMap.set(m.nodeId, m.nodeType);
         }
       }
     }
@@ -643,33 +745,96 @@ export class Repository {
     };
   }
 
+  getError(id: string): DevErrorRecord | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT id, source, category, message, stack, context_json as contextJson, status, fix_notes as fixNotes, resolved_at as resolvedAt, created_at as createdAt FROM dev_errors WHERE id = ?'
+      )
+      .get(id) as unknown as DevErrorRecord | undefined;
+    return row;
+  }
+
   listErrors(options?: { status?: string; limit?: number }): DevErrorRecord[] {
     const limit = options?.limit ?? 100;
     if (options?.status && options.status !== 'all') {
       const rows = this.db
         .prepare(
-          'SELECT id, source, category, message, stack, context_json as contextJson, status, created_at as createdAt FROM dev_errors WHERE status = ? ORDER BY created_at DESC LIMIT ?'
+          'SELECT id, source, category, message, stack, context_json as contextJson, status, fix_notes as fixNotes, resolved_at as resolvedAt, created_at as createdAt FROM dev_errors WHERE status = ? ORDER BY created_at DESC LIMIT ?'
         )
         .all(options.status, limit) as unknown as DevErrorRecord[];
       return rows;
     }
     const rows = this.db
       .prepare(
-        'SELECT id, source, category, message, stack, context_json as contextJson, status, created_at as createdAt FROM dev_errors ORDER BY created_at DESC LIMIT ?'
+        'SELECT id, source, category, message, stack, context_json as contextJson, status, fix_notes as fixNotes, resolved_at as resolvedAt, created_at as createdAt FROM dev_errors ORDER BY created_at DESC LIMIT ?'
       )
       .all(limit) as unknown as DevErrorRecord[];
     return rows;
   }
 
-  markErrorStatus(id: string, status: 'unresolved' | 'resolved' | 'ignored'): boolean {
-    const res = this.db
-      .prepare('UPDATE dev_errors SET status = ? WHERE id = ?')
-      .run(status, id);
+  markErrorStatus(
+    id: string,
+    status: 'unresolved' | 'in_progress' | 'resolved' | 'ignored',
+    fixNotes?: string
+  ): boolean {
+    const resolvedAt = status === 'resolved' ? new Date().toISOString() : null;
+    let res;
+    if (fixNotes !== undefined) {
+      res = this.db
+        .prepare(
+          'UPDATE dev_errors SET status = ?, fix_notes = ?, resolved_at = COALESCE(?, resolved_at) WHERE id = ?'
+        )
+        .run(status, fixNotes, resolvedAt, id);
+    } else {
+      res = this.db
+        .prepare('UPDATE dev_errors SET status = ?, resolved_at = COALESCE(?, resolved_at) WHERE id = ?')
+        .run(status, resolvedAt, id);
+    }
     return res.changes > 0;
+  }
+
+  getErrorStats(): {
+    total: number;
+    unresolved: number;
+    in_progress: number;
+    resolved: number;
+    ignored: number;
+  } {
+    const rows = this.db
+      .prepare('SELECT status, COUNT(*) as count FROM dev_errors GROUP BY status')
+      .all() as { status: string; count: number }[];
+
+    const stats = {
+      total: 0,
+      unresolved: 0,
+      in_progress: 0,
+      resolved: 0,
+      ignored: 0,
+    };
+
+    for (const r of rows) {
+      stats.total += r.count;
+      if (r.status in stats) {
+        (stats as any)[r.status] = r.count;
+      }
+    }
+
+    return stats;
   }
 
   clearErrors(): void {
     this.db.exec('DELETE FROM dev_errors;');
+  }
+
+  clearResolvedErrors(keepRecentDays?: number): void {
+    if (keepRecentDays && keepRecentDays > 0) {
+      const cutoff = new Date(Date.now() - keepRecentDays * 86400000).toISOString();
+      this.db
+        .prepare("DELETE FROM dev_errors WHERE status IN ('resolved', 'ignored') AND resolved_at < ?")
+        .run(cutoff);
+    } else {
+      this.db.exec("DELETE FROM dev_errors WHERE status IN ('resolved', 'ignored');");
+    }
   }
 }
 
@@ -680,6 +845,8 @@ export interface DevErrorRecord {
   message: string;
   stack?: string | null;
   contextJson?: string | null;
-  status: 'unresolved' | 'resolved' | 'ignored';
+  status: 'unresolved' | 'in_progress' | 'resolved' | 'ignored';
+  fixNotes?: string | null;
+  resolvedAt?: string | null;
   createdAt: string;
 }

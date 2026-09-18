@@ -264,6 +264,115 @@ Here are 3 recommended goals:
     expect(emptyList.json().errors).toHaveLength(0);
   });
 
+  it('provides rich error inspection, stats, fix verification, and clear-resolved endpoints', async () => {
+    // 1. Post two errors
+    const err1Res = await app.inject({
+      method: 'POST',
+      url: '/api/errors',
+      payload: {
+        category: 'import_parser',
+        message: 'Invalid json format',
+        stack: 'Error: Invalid json\n  at parse...',
+        contextJson: JSON.stringify({ rawText: 'bad payload' }),
+      },
+    });
+    const err2Res = await app.inject({
+      method: 'POST',
+      url: '/api/errors',
+      payload: {
+        category: 'proposal_commit',
+        message: 'Missing parent goal',
+      },
+    });
+    const err1Id = err1Res.json().id;
+    const err2Id = err2Res.json().id;
+
+    // 2. Query stats
+    const statsRes = await app.inject({
+      method: 'GET',
+      url: '/api/errors/stats',
+    });
+    expect(statsRes.statusCode).toBe(200);
+    const stats = statsRes.json();
+    expect(stats.total).toBe(2);
+    expect(stats.unresolved).toBe(2);
+    expect(stats.resolved).toBe(0);
+
+    // 3. Inspect individual error by ID
+    const detailRes = await app.inject({
+      method: 'GET',
+      url: `/api/errors/${err1Id}`,
+    });
+    expect(detailRes.statusCode).toBe(200);
+    expect(detailRes.json().message).toBe('Invalid json format');
+    expect(detailRes.json().contextJson).toContain('bad payload');
+
+    // 404 for nonexistent error
+    const missingRes = await app.inject({
+      method: 'GET',
+      url: '/api/errors/err_nonexistent',
+    });
+    expect(missingRes.statusCode).toBe(404);
+
+    // 4. Mark err1 as resolved with fixNotes
+    const fixNotes = 'Added lenient fallback JSON parser in commitProposal.';
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/errors/${err1Id}`,
+      payload: {
+        status: 'resolved',
+        fixNotes,
+      },
+    });
+    expect(patchRes.statusCode).toBe(200);
+    expect(patchRes.json().success).toBe(true);
+    expect(patchRes.json().error.status).toBe('resolved');
+    expect(patchRes.json().error.fixNotes).toBe(fixNotes);
+    expect(patchRes.json().error.resolvedAt).toBeDefined();
+
+    // Verify stats after resolution
+    const statsAfterRes = await app.inject({
+      method: 'GET',
+      url: '/api/errors/stats',
+    });
+    expect(statsAfterRes.json().resolved).toBe(1);
+    expect(statsAfterRes.json().unresolved).toBe(1);
+
+    // 5. Test verification runner
+    const verifyRes = await app.inject({
+      method: 'POST',
+      url: '/api/errors/verify',
+      payload: {
+        command: 'node -v',
+      },
+    });
+    expect(verifyRes.statusCode).toBe(200);
+    expect(verifyRes.json().success).toBe(true);
+    expect(verifyRes.json().commandPassed).toBe(true);
+
+    // 6. Clear resolved errors only
+    const clearRes = await app.inject({
+      method: 'POST',
+      url: '/api/errors/clear-resolved',
+    });
+    expect(clearRes.statusCode).toBe(200);
+    expect(clearRes.json().success).toBe(true);
+
+    // err1 should be gone, err2 should remain
+    const err1Check = await app.inject({
+      method: 'GET',
+      url: `/api/errors/${err1Id}`,
+    });
+    expect(err1Check.statusCode).toBe(404);
+
+    const err2Check = await app.inject({
+      method: 'GET',
+      url: `/api/errors/${err2Id}`,
+    });
+    expect(err2Check.statusCode).toBe(200);
+    expect(err2Check.json().status).toBe('unresolved');
+  });
+
   it('auto-creates container Goal when proposal contains actions without a parent goal', async () => {
     const wsRes = await app.inject({
       method: 'POST',
@@ -310,5 +419,93 @@ Here are 3 recommended goals:
       url: `/api/workspaces/${wsId}/graph`,
     });
     expect(emptyGraphRes.json().nodes).toHaveLength(0);
+  });
+
+  it('supports attaching and deleting evidence via REST API and reflects in export prompt', async () => {
+    const wsRes = await app.inject({ method: 'GET', url: '/api/workspaces' });
+    const wsId = wsRes.json()[0].id;
+
+    const nodeRes = await app.inject({
+      method: 'POST',
+      url: `/api/workspaces/${wsId}/nodes`,
+      payload: {
+        type: 'goal',
+        title: 'Security Audit',
+      },
+    });
+    expect(nodeRes.statusCode).toBe(200);
+    const goalId = nodeRes.json().id;
+
+    // 1. Validation failure: missing content
+    const invalidRes = await app.inject({
+      method: 'POST',
+      url: `/api/nodes/${goalId}/evidence`,
+      payload: { content: '   ' },
+    });
+    expect(invalidRes.statusCode).toBe(400);
+
+    // 2. 404 for nonexistent node
+    const missingNodeRes = await app.inject({
+      method: 'POST',
+      url: '/api/nodes/nonexistent_id/evidence',
+      payload: { content: 'Some note' },
+    });
+    expect(missingNodeRes.statusCode).toBe(404);
+
+    // 3. Successfully attach evidence
+    const addRes = await app.inject({
+      method: 'POST',
+      url: `/api/nodes/${goalId}/evidence`,
+      payload: {
+        content: 'Must comply with SOC2 Type II requirements before Q3.',
+        sourceTitle: 'Compliance Guidelines',
+        sourceUrl: 'https://example.com/soc2',
+        confidence: 'high',
+      },
+    });
+    expect(addRes.statusCode).toBe(201);
+    const ev = addRes.json();
+    expect(ev.id).toMatch(/^ev_/);
+    expect(ev.content).toContain('SOC2 Type II');
+    expect(ev.addedBy).toBe('user');
+    expect(ev.confidence).toBe('high');
+
+    // 4. Verify in graph endpoint
+    const graphRes = await app.inject({
+      method: 'GET',
+      url: `/api/workspaces/${wsId}/graph`,
+    });
+    expect(graphRes.statusCode).toBe(200);
+    const nodeInGraph = graphRes.json().nodes.find((n: any) => n.id === goalId);
+    expect(nodeInGraph.evidence).toHaveLength(1);
+    expect(nodeInGraph.evidence[0].id).toBe(ev.id);
+
+    // 5. Verify included in LLM export prompt for focused node
+    const exportRes = await app.inject({
+      method: 'POST',
+      url: `/api/workspaces/${wsId}/export`,
+      payload: {
+        focusNodeId: goalId,
+        requestMode: 'create_plan',
+      },
+    });
+    expect(exportRes.statusCode).toBe(200);
+    expect(exportRes.json().prompt).toContain('SOC2 Type II');
+
+    // 6. Delete evidence
+    const delRes = await app.inject({
+      method: 'DELETE',
+      url: `/api/evidence/${ev.id}`,
+    });
+    expect(delRes.statusCode).toBe(200);
+    expect(delRes.json().success).toBe(true);
+
+    // Verify evidence gone from graph
+    const graphAfterDel = await app.inject({
+      method: 'GET',
+      url: `/api/workspaces/${wsId}/graph`,
+    });
+    const nodeAfterDel = graphAfterDel.json().nodes.find((n: any) => n.id === goalId);
+    expect(nodeAfterDel.evidence).toHaveLength(0);
   });
 });

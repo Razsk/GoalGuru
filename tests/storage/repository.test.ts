@@ -220,4 +220,54 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     repo.clearErrors();
     expect(repo.listErrors()).toHaveLength(0);
   });
+
+  it('allows user to attach and remove evidence on nodes directly (ADR 0002)', () => {
+    const user = repo.ensureUser({ id: 'u5', email: 'u5@test.com', displayName: 'U5' });
+    const ws = repo.createWorkspace(user.id, 'WS 5');
+
+    const goal = repo.createNode({
+      workspaceId: ws.id,
+      type: 'goal',
+      parentId: null,
+      title: 'Infrastructure Upgrade',
+    });
+
+    const v1 = repo.getStateVersion(ws.id);
+
+    // Add user-authored evidence
+    const ev = repo.addEvidence({
+      nodeId: goal.id,
+      content: 'Evaluated Cloudflare Workers vs Node.js for edge latency.',
+      sourceTitle: 'Edge Computing Benchmark 2026',
+      sourceUrl: 'https://example.com/benchmark',
+      confidence: 'high',
+      addedBy: 'user',
+    });
+
+    expect(ev.id).toMatch(/^ev_/);
+    expect(ev.content).toBe('Evaluated Cloudflare Workers vs Node.js for edge latency.');
+    expect(ev.addedBy).toBe('user');
+    expect(ev.confidence).toBe('high');
+    expect(ev.sourceUrl).toBe('https://example.com/benchmark');
+
+    // State version incremented
+    expect(repo.getStateVersion(ws.id)).toBe(v1 + 1);
+
+    // Verify in getNode and listNodes
+    const fetchedNode = repo.getNode(goal.id);
+    expect(fetchedNode?.evidence).toHaveLength(1);
+    expect(fetchedNode?.evidence[0].id).toBe(ev.id);
+
+    const allNodes = repo.listNodes(ws.id);
+    expect(allNodes[0].evidence).toHaveLength(1);
+    expect(allNodes[0].evidence[0].id).toBe(ev.id);
+
+    // Remove evidence
+    const removed = repo.removeEvidence(ev.id);
+    expect(removed).toBe(true);
+    expect(repo.getStateVersion(ws.id)).toBe(v1 + 2);
+
+    const nodeAfterRemove = repo.getNode(goal.id);
+    expect(nodeAfterRemove?.evidence).toHaveLength(0);
+  });
 });
