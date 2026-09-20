@@ -270,4 +270,65 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     const nodeAfterRemove = repo.getNode(goal.id);
     expect(nodeAfterRemove?.evidence).toHaveLength(0);
   });
+
+  it('archives a completed goal and all its descendants, and unarchives successfully', () => {
+    const user = repo.ensureUser({ id: 'u1', email: 'u1@test.com', displayName: 'U1' });
+    const ws = repo.createWorkspace(user.id, 'WS 1');
+
+    // 1. Create a goal with an action and sub-action
+    const goal = repo.createNode({
+      workspaceId: ws.id,
+      type: 'goal',
+      parentId: null,
+      title: 'Complete Project Alpha',
+      status: 'in_progress',
+    });
+
+    const action = repo.createNode({
+      workspaceId: ws.id,
+      type: 'action',
+      parentId: goal.id,
+      title: 'Finalize QA',
+      status: 'done',
+    });
+
+    const subAction = repo.createNode({
+      workspaceId: ws.id,
+      type: 'sub_action',
+      parentId: action.id,
+      title: 'Sign off',
+      status: 'done',
+    });
+
+    // Cannot archive an incomplete goal
+    expect(() => repo.archiveGoal(goal.id)).toThrow(/Only completed goals/);
+
+    // Mark goal done
+    repo.updateNode(goal.id, { status: 'done' });
+    const vBefore = repo.getStateVersion(ws.id);
+
+    // Archive completed goal
+    repo.archiveGoal(goal.id);
+    expect(repo.getStateVersion(ws.id)).toBe(vBefore + 1);
+
+    const archivedGoal = repo.getNode(goal.id);
+    const archivedAction = repo.getNode(action.id);
+    const archivedSubAction = repo.getNode(subAction.id);
+
+    expect(archivedGoal?.archivedAt).toBeTruthy();
+    expect(archivedAction?.archivedAt).toBeTruthy();
+    expect(archivedSubAction?.archivedAt).toBeTruthy();
+
+    // Unarchive goal
+    repo.unarchiveGoal(goal.id);
+    expect(repo.getStateVersion(ws.id)).toBe(vBefore + 2);
+
+    const restoredGoal = repo.getNode(goal.id);
+    const restoredAction = repo.getNode(action.id);
+    const restoredSubAction = repo.getNode(subAction.id);
+
+    expect(restoredGoal?.archivedAt).toBeNull();
+    expect(restoredAction?.archivedAt).toBeNull();
+    expect(restoredSubAction?.archivedAt).toBeNull();
+  });
 });

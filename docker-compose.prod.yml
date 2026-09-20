@@ -1,0 +1,19 @@
+services:
+  goal-guru-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: goal-guru-web
+    restart: unless-stopped
+    ports:
+      - "8282:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_PATH=/app/data/goalguru.db
+    volumes:
+      - goalguru_data:/app/data
+
+volumes:
+  goalguru_data:
+    name: goalguru_data

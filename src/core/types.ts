@@ -35,6 +35,7 @@ export interface Node {
   expectedOutputs?: string;
   actualOutputs?: string;
   evidence: Evidence[];
+  archivedAt?: string | null; // ISO 8601 when archived
   createdAt: string;
   updatedAt: string;
 }

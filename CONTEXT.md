@@ -89,3 +89,7 @@ _Avoid_: State, phase, lifecycle
 **Readiness**:
 The dynamically computed availability of a node based on its dependencies (`ready`, `blocked`).
 _Avoid_: Blocked status, ready status
+
+**Archive**:
+A preserved collection of completed goals and their historical subtrees, removed from active execution and analytics.
+_Avoid_: Trash, backlog, graveyard

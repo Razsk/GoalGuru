@@ -50,6 +50,7 @@ export interface WorkspaceProgressSummary {
   tierRings: RingData[];
   goalRings: RingData[];
   goalSummaries: GoalProgressInfo[];
+  archivedGoalsCount?: number;
 }
 
 const DEFAULT_RING_COLORS = [
@@ -157,17 +158,21 @@ export function computeWorkspaceProgress(
   nodes: Node[],
   readinessMap?: Map<string, NodeReadinessInfo> | Record<string, NodeReadinessInfo>
 ): WorkspaceProgressSummary {
-  const actionsList = nodes.filter((n) => n.type === 'action' || n.type === 'sub_action');
-  const milestonesList = nodes.filter((n) => n.type === 'milestone');
-  const goalsList = nodes.filter((n) => n.type === 'goal' || n.type === 'sub_goal');
-  const rootGoals = nodes.filter((n) => n.type === 'goal');
+  // Isolate active scope from archived nodes
+  const activeNodes = nodes.filter((n) => !n.archivedAt);
+  const archivedGoalsCount = nodes.filter((n) => n.type === 'goal' && !!n.archivedAt).length;
+
+  const actionsList = activeNodes.filter((n) => n.type === 'action' || n.type === 'sub_action');
+  const milestonesList = activeNodes.filter((n) => n.type === 'milestone');
+  const goalsList = activeNodes.filter((n) => n.type === 'goal' || n.type === 'sub_goal');
+  const rootGoals = activeNodes.filter((n) => n.type === 'goal');
 
   const actions = computeMetricGroup(actionsList);
   const milestones = computeMetricGroup(milestonesList);
   const goals = computeMetricGroup(goalsList);
 
-  const totalNodes = nodes.length;
-  const completedNodes = nodes.filter((n) => n.status === 'done').length;
+  const totalNodes = activeNodes.length;
+  const completedNodes = activeNodes.filter((n) => n.status === 'done').length;
   const overallPercentage = totalNodes > 0 ? Math.round((completedNodes / totalNodes) * 100) : 0;
 
   // Readiness pipeline categorization
@@ -187,7 +192,7 @@ export function computeWorkspaceProgress(
     return (readinessMap as Record<string, NodeReadinessInfo>)[nodeId]?.readiness || 'ready';
   };
 
-  for (const node of nodes) {
+  for (const node of activeNodes) {
     if (node.status === 'done') {
       pipeline.done.push(node);
     } else if (node.status === 'abandoned') {
@@ -240,7 +245,7 @@ export function computeWorkspaceProgress(
   const goalRings: RingData[] = [];
 
   rootGoals.forEach((goal, index) => {
-    const descendants = getDescendantNodes(goal.id, nodes);
+    const descendants = getDescendantNodes(goal.id, activeNodes);
     const goalActions = descendants.filter((n) => n.type === 'action' || n.type === 'sub_action');
     const goalMilestones = descendants.filter((n) => n.type === 'milestone');
 
@@ -289,5 +294,6 @@ export function computeWorkspaceProgress(
     tierRings,
     goalRings,
     goalSummaries,
+    archivedGoalsCount,
   };
 }

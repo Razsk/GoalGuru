@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   expected_outputs TEXT,
   actual_outputs TEXT,
   version INTEGER NOT NULL DEFAULT 1,
+  archived_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE

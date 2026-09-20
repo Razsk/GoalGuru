@@ -3,6 +3,7 @@ import { User, Workspace, Node, Dependency, Evidence, EvidenceConfidence, Eviden
 import { Mutation } from '../protocol/types.js';
 import { generateId, generateNodeId } from '../core/id.js';
 import { generateInverseMutations } from '../protocol/changeset.js';
+import { getDescendantNodes } from '../core/progress.js';
 
 export interface CollisionResult {
   hasCollision: boolean;
@@ -48,6 +49,7 @@ export class Repository {
         expected_outputs TEXT,
         actual_outputs TEXT,
         version INTEGER NOT NULL DEFAULT 1,
+        archived_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
@@ -109,6 +111,9 @@ export class Repository {
     } catch {}
     try {
       this.db.exec('ALTER TABLE dev_errors ADD COLUMN resolved_at TEXT;');
+    } catch {}
+    try {
+      this.db.exec('ALTER TABLE nodes ADD COLUMN archived_at TEXT;');
     } catch {}
   }
 
@@ -208,8 +213,8 @@ export class Repository {
 
     this.db
       .prepare(`
-        INSERT INTO nodes (id, workspace_id, type, parent_id, title, description, status, inputs, expected_outputs, actual_outputs, version, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO nodes (id, workspace_id, type, parent_id, title, description, status, inputs, expected_outputs, actual_outputs, version, archived_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -223,6 +228,7 @@ export class Repository {
         params.expectedOutputs || null,
         params.actualOutputs || null,
         version,
+        null,
         now,
         now
       );
@@ -239,6 +245,7 @@ export class Repository {
       expectedOutputs: params.expectedOutputs,
       actualOutputs: params.actualOutputs,
       evidence: [],
+      archivedAt: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -255,15 +262,16 @@ export class Repository {
     const inputs = updates.inputs !== undefined ? updates.inputs : existing.inputs;
     const expectedOutputs = updates.expectedOutputs !== undefined ? updates.expectedOutputs : existing.expectedOutputs;
     const actualOutputs = updates.actualOutputs !== undefined ? updates.actualOutputs : existing.actualOutputs;
+    const archivedAt = updates.archivedAt !== undefined ? updates.archivedAt : existing.archivedAt;
     const now = new Date().toISOString();
 
     this.db
       .prepare(`
         UPDATE nodes
-        SET title = ?, description = ?, status = ?, inputs = ?, expected_outputs = ?, actual_outputs = ?, version = ?, updated_at = ?
+        SET title = ?, description = ?, status = ?, inputs = ?, expected_outputs = ?, actual_outputs = ?, version = ?, archived_at = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(title, description || null, status, inputs || null, expectedOutputs || null, actualOutputs || null, newVersion, now, nodeId);
+      .run(title, description || null, status, inputs || null, expectedOutputs || null, actualOutputs || null, newVersion, archivedAt || null, now, nodeId);
   }
 
   deleteNode(nodeId: string): void {
@@ -274,12 +282,59 @@ export class Repository {
     this.incrementStateVersion(existing.workspaceId);
   }
 
+  archiveGoal(goalId: string): void {
+    const goal = this.getNode(goalId);
+    if (!goal) {
+      throw new Error(`Goal with id '${goalId}' not found.`);
+    }
+    if (goal.type !== 'goal') {
+      throw new Error(`Only nodes of type 'goal' can be archived. Node '${goalId}' is of type '${goal.type}'.`);
+    }
+    if (goal.status !== 'done') {
+      throw new Error(`Only completed goals (status 'done') can be archived. Current status is '${goal.status}'.`);
+    }
+
+    const allNodes = this.listNodes(goal.workspaceId);
+    const descendants = getDescendantNodes(goalId, allNodes);
+    const targetIds = [goalId, ...descendants.map(n => n.id)];
+
+    const now = new Date().toISOString();
+    const updateStmt = this.db.prepare('UPDATE nodes SET archived_at = ?, updated_at = ? WHERE id = ?');
+    for (const id of targetIds) {
+      updateStmt.run(now, now, id);
+    }
+
+    this.incrementStateVersion(goal.workspaceId);
+  }
+
+  unarchiveGoal(goalId: string): void {
+    const goal = this.getNode(goalId);
+    if (!goal) {
+      throw new Error(`Goal with id '${goalId}' not found.`);
+    }
+    if (!goal.archivedAt) {
+      throw new Error(`Goal '${goalId}' is not archived.`);
+    }
+
+    const allNodes = this.listNodes(goal.workspaceId);
+    const descendants = getDescendantNodes(goalId, allNodes);
+    const targetIds = [goalId, ...descendants.map(n => n.id)];
+
+    const now = new Date().toISOString();
+    const updateStmt = this.db.prepare('UPDATE nodes SET archived_at = NULL, updated_at = ? WHERE id = ?');
+    for (const id of targetIds) {
+      updateStmt.run(now, id);
+    }
+
+    this.incrementStateVersion(goal.workspaceId);
+  }
+
   listNodes(workspaceId: string): Node[] {
     const rows = this.db
       .prepare(`
         SELECT id, workspace_id as workspaceId, type, parent_id as parentId, title, description, status,
                inputs, expected_outputs as expectedOutputs, actual_outputs as actualOutputs,
-               created_at as createdAt, updated_at as updatedAt
+               archived_at as archivedAt, created_at as createdAt, updated_at as updatedAt
         FROM nodes
         WHERE workspace_id = ?
         ORDER BY created_at ASC
@@ -326,7 +381,7 @@ export class Repository {
       .prepare(`
         SELECT id, workspace_id as workspaceId, type, parent_id as parentId, title, description, status,
                inputs, expected_outputs as expectedOutputs, actual_outputs as actualOutputs,
-               created_at as createdAt, updated_at as updatedAt
+               archived_at as archivedAt, created_at as createdAt, updated_at as updatedAt
         FROM nodes
         WHERE id = ?
       `)
@@ -337,7 +392,7 @@ export class Repository {
     const evidenceRows = this.db
       .prepare(`
         SELECT id, content, source_url as sourceUrl, source_title as sourceTitle,
-               retrieved_at as retrievedAt, added_by as addedBy, confidence
+                retrieved_at as retrievedAt, added_by as addedBy, confidence
         FROM evidence
         WHERE node_id = ?
       `)

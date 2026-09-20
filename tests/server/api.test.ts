@@ -508,4 +508,81 @@ Here are 3 recommended goals:
     const nodeAfterDel = graphAfterDel.json().nodes.find((n: any) => n.id === goalId);
     expect(nodeAfterDel.evidence).toHaveLength(0);
   });
+
+  it('archives a completed goal via API and restores it via unarchive', async () => {
+    // 1. Get workspace
+    const wsRes = await app.inject({ method: 'GET', url: '/api/workspaces' });
+    const wsId = wsRes.json()[0].id;
+
+    // 2. Create goal
+    const goalRes = await app.inject({
+      method: 'POST',
+      url: `/api/workspaces/${wsId}/nodes`,
+      payload: {
+        type: 'goal',
+        title: 'Launch Space Station',
+        status: 'in_progress',
+      },
+    });
+    const goalId = goalRes.json().id;
+
+    // 3. Attempting to archive in_progress goal returns 400
+    const failRes = await app.inject({
+      method: 'POST',
+      url: `/api/nodes/${goalId}/archive`,
+    });
+    expect(failRes.statusCode).toBe(400);
+    expect(failRes.json().error).toContain('Only completed goals');
+
+    // 4. Mark goal done
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/nodes/${goalId}`,
+      payload: { status: 'done' },
+    });
+
+    // 5. Successfully archive
+    const archiveRes = await app.inject({
+      method: 'POST',
+      url: `/api/nodes/${goalId}/archive`,
+    });
+    expect(archiveRes.statusCode).toBe(200);
+    expect(archiveRes.json().success).toBe(true);
+    expect(archiveRes.json().goal.archivedAt).toBeTruthy();
+
+    // 6. Verify in graph
+    const graphRes = await app.inject({
+      method: 'GET',
+      url: `/api/workspaces/${wsId}/graph`,
+    });
+    const archivedNode = graphRes.json().nodes.find((n: any) => n.id === goalId);
+    expect(archivedNode.archivedAt).toBeTruthy();
+
+    // 7. Unarchive
+    const unarchiveRes = await app.inject({
+      method: 'POST',
+      url: `/api/nodes/${goalId}/unarchive`,
+    });
+    expect(unarchiveRes.statusCode).toBe(200);
+    expect(unarchiveRes.json().success).toBe(true);
+    expect(unarchiveRes.json().goal.archivedAt).toBeNull();
+  });
+
+  it('serves persistent custom agent system prompt with milestone rules and request modes portfolio (ADR 0017)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/agent-system-prompt',
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.prompt).toContain('You are the Goal Guru planning advisor.');
+    expect(body.prompt).toContain('nodeType: "milestone"');
+    expect(body.prompt).toContain('REQUEST MODES & INTENT PORTFOLIO:');
+    expect(body.prompt).toContain("'create_plan':");
+    expect(body.prompt).toContain("'action_assistance':");
+    expect(body.prompt).toContain("'report_progress':");
+    expect(body.prompt).toContain("'replan':");
+    expect(body.prompt).toContain('When decomposing a Goal: First establish 2-4 sequential intermediate milestones');
+  });
 });
+

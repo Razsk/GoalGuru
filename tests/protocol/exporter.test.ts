@@ -153,4 +153,62 @@ describe('Subgraph Context Exporter (ADR 0006 & ADR 0013)', () => {
     const exportedIds = subgraph.nodes.map((n) => n.id);
     expect(exportedIds).toContain('act_active');
   });
+
+  it('instructs LLM to create sequential milestones and link them when decomposing goals in create_plan', () => {
+    const subgraph = extractCausalSubgraph('goal_1', allNodes, dependencies, 'create_plan');
+    const prompt = formatExportPrompt({
+      requestMode: 'create_plan',
+      focusNodeId: 'goal_1',
+      stateVersion: 1,
+      subgraph,
+    });
+
+    expect(prompt).toContain("When planning a 'goal': First establish 2-4 sequential intermediate milestones (nodeType: 'milestone')");
+    expect(prompt).toContain("connect them sequentially with 'add_dependency' edges");
+    expect(prompt).toContain('OBJECTIVE FOR REQUEST MODE (create_plan):');
+  });
+
+  it('formats mode-specific instructions and strict negative constraints for action_assistance', () => {
+    const subgraph = extractCausalSubgraph('act_db', allNodes, dependencies, 'action_assistance');
+    const prompt = formatExportPrompt({
+      requestMode: 'action_assistance',
+      focusNodeId: 'act_db',
+      stateVersion: 2,
+      subgraph,
+    });
+
+    expect(prompt).toContain('OBJECTIVE FOR REQUEST MODE (action_assistance):');
+    expect(prompt).toContain('STRICT NEGATIVE CONSTRAINT: Do NOT alter graph structure');
+    expect(prompt).toContain('Leave the changeSet empty ([]) or restricted to \'add_evidence\'');
+  });
+
+  it('formats mode-specific instructions for report_progress reconciliation', () => {
+    const subgraph = extractCausalSubgraph('act_db', allNodes, dependencies, 'report_progress');
+    const prompt = formatExportPrompt({
+      requestMode: 'report_progress',
+      focusNodeId: 'act_db',
+      stateVersion: 3,
+      subgraph,
+      userNote: 'Completed initial schema migrations and tested connection.',
+    });
+
+    expect(prompt).toContain('OBJECTIVE FOR REQUEST MODE (report_progress):');
+    expect(prompt).toContain('Reconcile the user\'s free-form progress notes against the active tasks');
+    expect(prompt).toContain('propose \'update_status\' mutations with status: \'done\'');
+  });
+
+  it('formats mode-specific instructions and preservation constraints for replan', () => {
+    const subgraph = extractCausalSubgraph('act_db', allNodes, dependencies, 'replan');
+    const prompt = formatExportPrompt({
+      requestMode: 'replan',
+      focusNodeId: 'act_db',
+      stateVersion: 4,
+      subgraph,
+    });
+
+    expect(prompt).toContain('OBJECTIVE FOR REQUEST MODE (replan):');
+    expect(prompt).toContain('STRICT CONSTRAINT: Preserve completed work');
+    expect(prompt).toContain('Never delete or alter nodes whose status is already \'done\'');
+  });
 });
+

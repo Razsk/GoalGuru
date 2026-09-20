@@ -200,6 +200,16 @@
       details: 'Never stored directly in the database. A node is "blocked" if any of its inbound prerequisite dependencies are not yet "done", and "ready" once all prerequisites are met.',
       relatedTermIds: ['status', 'dependency', 'cycle'],
       relatedTopicIds: ['dependencies-readiness', 'progress-analytics'],
+    },
+    {
+      id: 'archive',
+      term: 'Archive',
+      category: 'Execution & Lifecycle',
+      definition: 'A preserved collection of completed goals and their historical subtrees, removed from active execution and analytics.',
+      avoid: ['Trash', 'backlog', 'graveyard'],
+      details: 'Completed goals (status "done") can be moved to the archive to keep the active execution tree uncluttered. Archived goals are excluded from workspace progress metrics, multi-ring charts, and readiness pipelines, but remain viewable and can be restored at any time.',
+      relatedTermIds: ['goal', 'status'],
+      relatedTopicIds: ['goals-and-actions', 'progress-analytics'],
     }
   ];
 
@@ -247,10 +257,18 @@
         {
           title: 'Stored Status Lifecycle',
           content: 'Every node possesses an explicit stored [status](term:status) that captures your execution intent:\n* **todo**: Work is planned but not yet started.\n* **in_progress**: Work is actively underway.\n* **done**: The node has achieved its target outcome.\n* **abandoned**: Work was intentionally dropped or superseded.\n\nClicking the status badge on any node advances it sequentially through the lifecycle (*todo* → *in_progress* → *done* → *todo*).'
+        },
+        {
+          title: 'Archiving Completed Goals',
+          content: 'Once a [goal](term:goal) reaches *done* status, you can move it into the [archive](term:archive).\n\nArchiving a completed goal preserves its entire audit tree (milestones, actions, evidence) in a dedicated Archive view, while completely removing it from active analytics, progress dials, and execution readiness. Archived goals can be unarchived and restored to active scope at any time.',
+          tips: [
+            'Only goals marked done can be archived.',
+            'Archived goals do not affect active workspace progress percentages or LLM proposal context.'
+          ]
         }
       ],
       relatedTopicIds: ['dependencies-readiness', 'progress-analytics', 'getting-started'],
-      relatedTermIds: ['goal', 'milestone', 'action', 'sub-action', 'status']
+      relatedTermIds: ['goal', 'milestone', 'action', 'sub-action', 'status', 'archive']
     },
     {
       id: 'dependencies-readiness',

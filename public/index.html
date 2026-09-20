@@ -855,10 +855,13 @@
     }
 
     function computeWorkspaceProgress(nodes, readinessMap) {
-      const actionsList = nodes.filter(n => n.type === 'action' || n.type === 'sub_action');
-      const milestonesList = nodes.filter(n => n.type === 'milestone');
-      const goalsList = nodes.filter(n => n.type === 'goal' || n.type === 'sub_goal');
-      const rootGoals = nodes.filter(n => n.type === 'goal');
+      const activeNodes = (nodes || []).filter(n => !n.archivedAt);
+      const archivedGoalsCount = (nodes || []).filter(n => n.type === 'goal' && !!n.archivedAt).length;
+
+      const actionsList = activeNodes.filter(n => n.type === 'action' || n.type === 'sub_action');
+      const milestonesList = activeNodes.filter(n => n.type === 'milestone');
+      const goalsList = activeNodes.filter(n => n.type === 'goal' || n.type === 'sub_goal');
+      const rootGoals = activeNodes.filter(n => n.type === 'goal');
 
       const computeGroup = (list) => {
         const total = list.length;
@@ -874,12 +877,12 @@
       const milestones = computeGroup(milestonesList);
       const goals = computeGroup(goalsList);
 
-      const totalNodes = nodes.length;
-      const completedNodes = nodes.filter(n => n.status === 'done').length;
+      const totalNodes = activeNodes.length;
+      const completedNodes = activeNodes.filter(n => n.status === 'done').length;
       const overallPercentage = totalNodes > 0 ? Math.round((completedNodes / totalNodes) * 100) : 0;
 
       const pipeline = { ready: [], inProgress: [], blocked: [], done: [], abandoned: [] };
-      nodes.forEach(node => {
+      activeNodes.forEach(node => {
         const isBlocked = readinessMap?.[node.id]?.readiness === 'blocked';
         if (node.status === 'done') pipeline.done.push(node);
         else if (node.status === 'abandoned') pipeline.abandoned.push(node);
@@ -898,7 +901,7 @@
       const goalRings = [];
 
       rootGoals.forEach((goal, index) => {
-        const descendants = getDescendantNodes(goal.id, nodes);
+        const descendants = getDescendantNodes(goal.id, activeNodes);
         const goalActions = descendants.filter(n => n.type === 'action' || n.type === 'sub_action');
         const goalMilestones = descendants.filter(n => n.type === 'milestone');
         const totalActions = goalActions.length;
@@ -931,6 +934,7 @@
         overallPercentage,
         totalNodes,
         completedNodes,
+        archivedGoalsCount,
         actions,
         milestones,
         goals,
@@ -1264,6 +1268,12 @@
             </div>
 
             <div className="flex items-center space-x-3">
+              {progressSummary.archivedGoalsCount > 0 && (
+                <span className="hidden sm:inline-flex items-center text-[11px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200" title="Completed archived goals are excluded from active metrics">
+                  <i className="fa-solid fa-box-archive mr-1 text-[10px] text-slate-400"></i>
+                  {progressSummary.archivedGoalsCount} archived
+                </span>
+              )}
               <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold">
                 <i className="fa-solid fa-circle-check text-emerald-600 text-[10px]"></i>
                 <span>{progressSummary.overallPercentage}% Complete</span>
@@ -1508,8 +1518,14 @@
             <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-5 mb-6 border-b border-slate-100 gap-4">
               <div>
                 <h3 className="text-2xl font-black text-slate-900">Execution Velocity & Analytics</h3>
-                <p className="text-sm text-slate-600 mt-0.5">
-                  {progressSummary.completedNodes} of {progressSummary.totalNodes} total nodes completed across {progressSummary.goalSummaries.length} goals.
+                <p className="text-sm text-slate-600 mt-0.5 flex flex-wrap items-center gap-2">
+                  <span>{progressSummary.completedNodes} of {progressSummary.totalNodes} total nodes completed across {progressSummary.goalSummaries.length} active goals.</span>
+                  {progressSummary.archivedGoalsCount > 0 && (
+                    <span className="inline-flex items-center text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 px-2.5 py-0.5 rounded-full font-medium">
+                      <i className="fa-solid fa-box-archive mr-1.5 text-[10px]"></i>
+                      {progressSummary.archivedGoalsCount} completed goal{progressSummary.archivedGoalsCount === 1 ? ' is' : 's are'} archived outside active metrics
+                    </span>
+                  )}
                 </p>
               </div>
 
@@ -2153,6 +2169,7 @@
       // Scope filters
       const [goalScope, setGoalScope] = useState('all'); // 'all' | 'cross_goal_only' | specific goal id
       const [connectedOnly, setConnectedOnly] = useState(true); // Default true to prevent clutter
+      const [includeDone, setIncludeDone] = useState(true); // Toggle Done nodes
       const [filterStatus, setFilterStatus] = useState('all'); // 'all' | 'blocked' | 'ready' | 'in_progress' | 'done'
       const [filterType, setFilterType] = useState('all'); // 'all' | 'goal' | 'milestone' | 'action'
       const [searchQuery, setSearchQuery] = useState('');
@@ -2167,11 +2184,13 @@
       const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
       const [panStart, setPanStart] = useState({ x: 0, y: 0 });
       const [addDepModal, setAddDepModal] = useState({ isOpen: false, fromId: '', toId: '' });
+      const [connecting, setConnecting] = useState(null);
 
       const canvasRef = useRef(null);
 
-      const nodes = graphData.nodes || [];
-      const dependencies = graphData.dependencies || [];
+      const nodes = useMemo(() => (graphData.nodes || []).filter(n => !n.archivedAt), [graphData.nodes]);
+      const activeNodeIds = useMemo(() => new Set(nodes.map(n => n.id)), [nodes]);
+      const dependencies = useMemo(() => (graphData.dependencies || []).filter(d => activeNodeIds.has(d.fromNodeId) && activeNodeIds.has(d.toNodeId)), [graphData.dependencies, activeNodeIds]);
       const readinessMap = graphData.readiness || {};
 
       const nodeMap = useMemo(() => {
@@ -2179,6 +2198,45 @@
         nodes.forEach(n => m.set(n.id, n));
         return m;
       }, [nodes]);
+
+      // Screen to Canvas Coordinates Converter
+      const getCanvasCoordinates = useCallback((clientX, clientY) => {
+        if (!canvasRef.current) return { x: 0, y: 0 };
+        const rect = canvasRef.current.getBoundingClientRect();
+        return {
+          x: (clientX - rect.left - pan.x) / zoom,
+          y: (clientY - rect.top - pan.y) / zoom,
+        };
+      }, [pan, zoom]);
+
+      // Connection Validation (ADR 0001, ADR 0003 & Cycle Prevention)
+      const evaluateConnectionTarget = useCallback((fromId, toId) => {
+        if (!fromId || !toId) return { isValid: false, reason: null };
+        if (fromId === toId) return { isValid: false, reason: 'Cannot connect a task to itself' };
+
+        const fromNode = nodeMap.get(fromId);
+        const toNode = nodeMap.get(toId);
+        if (!fromNode || !toNode) return { isValid: false, reason: 'Node not found' };
+
+        // ADR 0001 & ADR 0003: Dependencies are allowed between Actions and Milestones
+        if (fromNode.type === 'goal' || toNode.type === 'goal') {
+          return { isValid: false, reason: 'Goals cannot have direct dependencies' };
+        }
+
+        // Check duplicate
+        const exists = dependencies.some(d => d.fromNodeId === fromId && d.toNodeId === toId);
+        if (exists) {
+          return { isValid: false, reason: 'Dependency link already exists' };
+        }
+
+        // Check cycle
+        const wouldCycle = checkWouldCreateCycle(fromId, toId, dependencies);
+        if (wouldCycle) {
+          return { isValid: false, reason: 'Circular dependency detected' };
+        }
+
+        return { isValid: true, reason: null };
+      }, [nodeMap, dependencies]);
 
       // All root goals & assigned colors
       const rootGoals = useMemo(() => {
@@ -2228,6 +2286,7 @@
         const dependencyEdges = dependencies.length;
         const crossGoalCount = crossGoalDeps.length;
         const blockedNodes = nodes.filter(n => readinessMap[n.id]?.readiness === 'blocked').length;
+        const doneNodes = nodes.filter(n => n.status === 'done').length;
 
         // Count how many items each node unblocks
         const unblockCount = new Map();
@@ -2250,6 +2309,7 @@
           dependencyEdges,
           crossGoalCount,
           blockedNodes,
+          doneNodes,
           topBottleneck,
           maxUnblocks
         };
@@ -2315,6 +2375,7 @@
           }
 
           // Status & Readiness filter
+          if (!includeDone && n.status === 'done' && filterStatus !== 'done') return false;
           if (filterStatus === 'blocked' && readinessMap[n.id]?.readiness !== 'blocked') return false;
           if (filterStatus === 'ready' && (readinessMap[n.id]?.readiness === 'blocked' || n.status === 'done')) return false;
           if (filterStatus === 'in_progress' && n.status !== 'in_progress') return false;
@@ -2330,7 +2391,7 @@
 
           return true;
         });
-      }, [nodes, dependencies, connectedNodeIds, connectedOnly, goalScope, nodeGoalMap, filterType, filterStatus, readinessMap, searchQuery]);
+      }, [nodes, dependencies, connectedNodeIds, connectedOnly, includeDone, goalScope, nodeGoalMap, filterType, filterStatus, readinessMap, searchQuery]);
 
       const filteredNodeIdSet = useMemo(() => {
         return new Set(filteredNodes.map(n => n.id));
@@ -2532,24 +2593,139 @@
         setPan({ x: 40, y: 40 });
       };
 
-      // Canvas Drag to Pan
+      // Connecting Arrow Dynamic Path (Dragging)
+      const connectingPathD = useMemo(() => {
+        if (!connecting) return '';
+        let x1 = connecting.startX;
+        let y1 = connecting.startY;
+        let x2 = connecting.currentX;
+        let y2 = connecting.currentY;
+
+        // If hovering over a target node, snap to target node's input edge
+        if (connecting.targetNodeId && dagLayout.nodeCoords.has(connecting.targetNodeId)) {
+          const targetPos = dagLayout.nodeCoords.get(connecting.targetNodeId);
+          if (orientation === 'horizontal') {
+            x2 = targetPos.x;
+            y2 = targetPos.y + targetPos.height / 2;
+          } else {
+            x2 = targetPos.x + targetPos.width / 2;
+            y2 = targetPos.y;
+          }
+        }
+
+        if (orientation === 'horizontal') {
+          const dx = Math.max(35, Math.abs(x2 - x1) * 0.45);
+          return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+        } else {
+          const dy = Math.max(35, Math.abs(y2 - y1) * 0.45);
+          return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
+        }
+      }, [connecting, dagLayout.nodeCoords, orientation]);
+
+      // Start drag-to-connect dependency from card handle
+      const handleStartConnect = (e, fromNode) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const fromPos = dagLayout.nodeCoords.get(fromNode.id);
+        if (!fromPos) return;
+
+        let startX, startY;
+        if (orientation === 'horizontal') {
+          startX = fromPos.x + fromPos.width;
+          startY = fromPos.y + fromPos.height / 2;
+        } else {
+          startX = fromPos.x + fromPos.width / 2;
+          startY = fromPos.y + fromPos.height;
+        }
+
+        const coords = getCanvasCoordinates(e.clientX, e.clientY);
+        setConnecting({
+          fromNodeId: fromNode.id,
+          startX,
+          startY,
+          currentX: coords.x,
+          currentY: coords.y,
+          targetNodeId: null,
+          isValid: false,
+          validationReason: null
+        });
+      };
+
+      // Cancel connecting on Escape key
+      useEffect(() => {
+        const handleKeyDown = (e) => {
+          if (e.key === 'Escape' && connecting) {
+            setConnecting(null);
+          }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [connecting]);
+
+      // Canvas Drag to Pan & Arrow Drawing
       const handleMouseDown = (e) => {
-        // Only drag if left click on canvas background (not on cards or buttons)
+        // Only drag if left click on canvas background (not on cards, handles, or buttons)
         if (e.button !== 0) return;
-        if (e.target.closest('.dag-node-card') || e.target.closest('.canvas-ui-control')) return;
+        if (e.target.closest('.dag-node-card') || e.target.closest('.canvas-ui-control') || e.target.closest('.connection-handle')) return;
         setIsDragging(true);
         setDragStart({ x: e.clientX, y: e.clientY });
         setPanStart({ x: pan.x, y: pan.y });
       };
 
       const handleMouseMove = (e) => {
+        if (connecting) {
+          const coords = getCanvasCoordinates(e.clientX, e.clientY);
+          // Detect card under mouse cursor
+          const cardEl = document.elementFromPoint(e.clientX, e.clientY)?.closest('.dag-node-card');
+          const targetId = cardEl ? cardEl.getAttribute('data-node-id') : null;
+          const evaluation = targetId ? evaluateConnectionTarget(connecting.fromNodeId, targetId) : { isValid: false, reason: null };
+
+          setConnecting(prev => prev ? {
+            ...prev,
+            currentX: coords.x,
+            currentY: coords.y,
+            targetNodeId: targetId,
+            isValid: evaluation.isValid,
+            validationReason: evaluation.reason
+          } : null);
+          return;
+        }
+
         if (!isDragging) return;
         const dx = e.clientX - dragStart.x;
         const dy = e.clientY - dragStart.y;
         setPan({ x: panStart.x + dx, y: panStart.y + dy });
       };
 
-      const handleMouseUp = () => {
+      const handleMouseUp = async () => {
+        if (connecting) {
+          const { fromNodeId, targetNodeId, isValid, validationReason } = connecting;
+          if (targetNodeId && isValid) {
+            const fromNode = nodeMap.get(fromNodeId);
+            const toNode = nodeMap.get(targetNodeId);
+            try {
+              const res = await fetch('/api/workspaces/' + workspaceId + '/dependencies', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fromNodeId, toNodeId: targetNodeId })
+              });
+              const data = await res.json();
+              if (!res.ok) {
+                showToast(data.error || 'Failed to create dependency', 'error');
+              } else {
+                showToast(`Dependency created: "${fromNode?.title}" ➔ "${toNode?.title}"`);
+                if (onRefreshGraph) onRefreshGraph();
+              }
+            } catch (err) {
+              showToast('Failed to create dependency', 'error');
+            }
+          } else if (targetNodeId && validationReason) {
+            showToast(validationReason, 'error');
+          }
+          setConnecting(null);
+          return;
+        }
+
         setIsDragging(false);
       };
 
@@ -2691,8 +2867,23 @@
                     className="rounded text-brand-600 focus:ring-brand-500 text-xs"
                   />
                   <span>Connected Only</span>
-                  <span className="text-[10px] text-slate-400 font-mono">({connectedNodeIds.size} nodes)</span>
+                  <span className="text-[10px] text-slate-400 font-mono">({connectedNodeIds.size})</span>
                 </label>
+
+                {/* Toggle Done Nodes */}
+                <button
+                  onClick={() => setIncludeDone(!includeDone)}
+                  className={'px-2.5 py-1 rounded-xl border font-semibold transition flex items-center space-x-1.5 ' + (
+                    includeDone
+                      ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                      : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'
+                  )}
+                  title={includeDone ? 'Click to hide completed (Done) nodes' : 'Click to show completed (Done) nodes'}
+                >
+                  <i className={'fa-solid ' + (includeDone ? 'fa-circle-check text-emerald-600' : 'fa-circle-notch text-slate-300') + ' text-[10px]'}></i>
+                  <span>Done Nodes</span>
+                  <span className="font-mono text-[10px] opacity-75">({metrics.doneNodes})</span>
+                </button>
 
                 {/* Readiness Filter */}
                 <div className="flex items-center space-x-1">
@@ -2700,14 +2891,15 @@
                     { id: 'all', label: 'All' },
                     { id: 'blocked', label: 'Blocked', icon: 'fa-lock' },
                     { id: 'ready', label: 'Ready', icon: 'fa-check' },
-                    { id: 'in_progress', label: 'Active', icon: 'fa-bolt' }
+                    { id: 'in_progress', label: 'Active', icon: 'fa-bolt' },
+                    { id: 'done', label: 'Done Only', icon: 'fa-check-double' }
                   ].map(st => (
                     <button
                       key={st.id}
                       onClick={() => setFilterStatus(st.id)}
                       className={'px-2 py-0.5 rounded-lg font-semibold transition flex items-center space-x-1 ' + (
                         filterStatus === st.id
-                          ? (st.id === 'blocked' ? 'bg-rose-600 text-white' : st.id === 'ready' ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-white')
+                          ? (st.id === 'blocked' ? 'bg-rose-600 text-white' : st.id === 'ready' ? 'bg-emerald-600 text-white' : st.id === 'done' ? 'bg-emerald-700 text-white' : 'bg-slate-900 text-white')
                           : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       )}
                     >
@@ -2764,6 +2956,9 @@
                   </span>
                   <span className="text-[11px] text-slate-400">
                     Showing {filteredNodes.length} of {nodes.length} nodes • {visibleDeps.length} edges
+                    {!includeDone && metrics.doneNodes > 0 && (
+                      <span className="text-emerald-700 font-medium ml-1.5">({metrics.doneNodes} completed hidden)</span>
+                    )}
                   </span>
                 </div>
 
@@ -2804,7 +2999,7 @@
                 onMouseLeave={handleMouseUp}
                 onWheel={handleWheel}
                 className={'relative w-full h-[640px] overflow-hidden select-none ' + (
-                  isDragging ? 'cursor-grabbing' : 'cursor-grab'
+                  isDragging ? 'cursor-grabbing' : connecting ? 'cursor-crosshair' : 'cursor-grab'
                 )}
                 style={{
                   backgroundColor: '#f8fafc',
@@ -2812,6 +3007,27 @@
                   backgroundSize: '24px 24px'
                 }}
               >
+                {/* Dragging Dependency Status Overlay */}
+                {connecting && (
+                  <div className="canvas-ui-control absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-slate-900/90 backdrop-blur-sm text-white px-4 py-2 rounded-2xl shadow-xl flex items-center space-x-3 text-xs border border-slate-700 pointer-events-none">
+                    <div className={`w-2.5 h-2.5 rounded-full ${
+                      connecting.targetNodeId
+                        ? (connecting.isValid ? 'bg-emerald-400 animate-ping' : 'bg-rose-500')
+                        : 'bg-brand-400 animate-pulse'
+                    }`} />
+                    <span className="font-semibold">
+                      {connecting.targetNodeId ? (
+                        connecting.isValid ? (
+                          <span>Drop to link: <strong>{nodeMap.get(connecting.fromNodeId)?.title}</strong> ➔ <strong>{nodeMap.get(connecting.targetNodeId)?.title}</strong></span>
+                        ) : (
+                          <span className="text-rose-300 font-bold">{connecting.validationReason}</span>
+                        )
+                      ) : (
+                        <span>Drag arrow to dependent task • Press <strong>Esc</strong> to cancel</span>
+                      )}
+                    </span>
+                  </div>
+                )}
                 {/* Empty State */}
                 {filteredNodes.length === 0 && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none p-6 text-center">
@@ -2826,6 +3042,7 @@
                       onClick={() => {
                         setGoalScope('all');
                         setConnectedOnly(false);
+                        setIncludeDone(true);
                         setFilterStatus('all');
                         setFilterType('all');
                         setSearchQuery('');
@@ -2863,6 +3080,15 @@
                       </marker>
                       <marker id="arrow-dimmed" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto">
                         <polygon points="0 0, 6 2.5, 0 5" fill="#cbd5e1" />
+                      </marker>
+                      <marker id="arrow-connecting-valid" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+                        <polygon points="0 0, 8 3.5, 0 7" fill="#10b981" />
+                      </marker>
+                      <marker id="arrow-connecting-invalid" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+                        <polygon points="0 0, 8 3.5, 0 7" fill="#f43f5e" />
+                      </marker>
+                      <marker id="arrow-connecting-neutral" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+                        <polygon points="0 0, 8 3.5, 0 7" fill="#6366f1" />
                       </marker>
                     </defs>
 
@@ -2934,6 +3160,34 @@
                         </g>
                       );
                     })}
+
+                    {/* Live interactive connecting arrow while dragging */}
+                    {connecting && connectingPathD && (
+                      <g className="pointer-events-none">
+                        {/* Glow halo */}
+                        <path
+                          d={connectingPathD}
+                          fill="none"
+                          stroke={connecting.targetNodeId ? (connecting.isValid ? '#10b981' : '#f43f5e') : '#6366f1'}
+                          strokeWidth="8"
+                          strokeOpacity="0.25"
+                        />
+                        {/* Core animated dashed Bézier path */}
+                        <path
+                          d={connectingPathD}
+                          fill="none"
+                          stroke={connecting.targetNodeId ? (connecting.isValid ? '#10b981' : '#f43f5e') : '#6366f1'}
+                          strokeWidth="3.5"
+                          strokeDasharray="6 4"
+                          className="animate-pulse"
+                          markerEnd={
+                            connecting.targetNodeId
+                              ? (connecting.isValid ? 'url(#arrow-connecting-valid)' : 'url(#arrow-connecting-invalid)')
+                              : 'url(#arrow-connecting-neutral)'
+                          }
+                        />
+                      </g>
+                    )}
                   </svg>
 
                   {/* HTML Node Cards Layer */}
@@ -2957,14 +3211,28 @@
                     const prereqCount = rel?.prerequisites?.length || 0;
                     const depCount = rel?.dependents?.length || 0;
 
+                    // Connecting state for this node
+                    const isConnectingSource = connecting && connecting.fromNodeId === node.id;
+                    const isConnectingTarget = connecting && connecting.targetNodeId === node.id;
+                    const isValidTarget = isConnectingTarget && connecting.isValid;
+                    const isInvalidTarget = isConnectingTarget && !connecting.isValid;
+                    const canBeDependency = node.type !== 'goal';
+
                     return (
                       <div
                         key={node.id}
+                        data-node-id={node.id}
                         onClick={() => setSelectedNodeId(isSelected ? null : node.id)}
                         onMouseEnter={() => setHoveredNodeId(node.id)}
                         onMouseLeave={() => setHoveredNodeId(null)}
-                        className={'dag-node-card absolute rounded-xl bg-white border cursor-pointer transition-all duration-150 flex flex-col justify-between ' + (
-                          isSelected
+                        className={'dag-node-card group/card absolute rounded-xl bg-white border cursor-pointer transition-all duration-150 flex flex-col justify-between ' + (
+                          isConnectingSource
+                            ? 'ring-2 ring-brand-500 border-brand-500 shadow-xl scale-[1.02] z-30'
+                            : isValidTarget
+                            ? 'ring-4 ring-emerald-500 border-emerald-500 shadow-2xl scale-[1.03] z-40 bg-emerald-50/30'
+                            : isInvalidTarget
+                            ? 'ring-4 ring-rose-500 border-rose-500 shadow-2xl scale-[1.03] z-40 bg-rose-50/30'
+                            : isSelected
                             ? 'ring-2 ring-brand-500 border-brand-500 shadow-lg scale-[1.02] z-30'
                             : isUpstream
                             ? 'ring-2 ring-cyan-400 border-cyan-400 shadow-md z-20'
@@ -2984,6 +3252,42 @@
                           className="h-1.5 w-full rounded-t-xl"
                           style={{ backgroundColor: palette.border }}
                         />
+
+                        {/* Input Target Anchor Indicator during connecting mode */}
+                        {connecting && connecting.fromNodeId !== node.id && canBeDependency && (
+                          <div
+                            className={'absolute z-30 pointer-events-none transition-all duration-150 flex items-center justify-center ' + (
+                              orientation === 'horizontal'
+                                ? '-left-2.5 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full '
+                                : 'left-1/2 -top-2.5 -translate-x-1/2 w-5 h-5 rounded-full '
+                            ) + (
+                              isValidTarget
+                                ? 'bg-emerald-500 text-white scale-125 ring-4 ring-emerald-200 shadow-md'
+                                : isInvalidTarget
+                                ? 'bg-rose-500 text-white scale-125 ring-4 ring-rose-200 shadow-md'
+                                : 'bg-slate-300 text-slate-600 border border-slate-400'
+                            )}
+                          >
+                            <div className="w-1.5 h-1.5 rounded-full bg-current"></div>
+                          </div>
+                        )}
+
+                        {/* Output Connector Drag Handle (Link as prerequisite) */}
+                        {canBeDependency && (
+                          <div
+                            onMouseDown={(e) => handleStartConnect(e, node)}
+                            title="Drag arrow to link as prerequisite for another task"
+                            className={'connection-handle absolute z-30 flex items-center justify-center cursor-crosshair transition-all duration-150 ' + (
+                              orientation === 'horizontal'
+                                ? '-right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-white border-2 border-brand-500 text-brand-600 shadow-sm hover:scale-125 hover:bg-brand-500 hover:text-white '
+                                : 'left-1/2 -bottom-3 -translate-x-1/2 w-6 h-6 rounded-full bg-white border-2 border-brand-500 text-brand-600 shadow-sm hover:scale-125 hover:bg-brand-500 hover:text-white '
+                            ) + (
+                              isConnectingSource ? 'scale-125 bg-brand-500 text-white shadow-md' : 'opacity-0 group-hover/card:opacity-100'
+                            )}
+                          >
+                            <i className={`fa-solid ${orientation === 'horizontal' ? 'fa-arrow-right' : 'fa-arrow-down'} text-[10px]`}></i>
+                          </div>
+                        )}
 
                         {/* Card Content */}
                         <div className="p-2.5 flex-1 flex flex-col justify-between overflow-hidden">
@@ -3085,14 +3389,14 @@
                   >
                     <i className="fa-solid fa-minus text-xs"></i>
                   </button>
-                  <div className="h-4 w-px bg-slate-200 mx-0.5"></div>
                   <button
                     onClick={handleResetZoom}
-                    className="px-2 h-7 rounded-xl hover:bg-slate-100 text-slate-700 font-mono text-[11px] font-bold flex items-center justify-center transition"
-                    title="Reset to 100%"
+                    className="px-2 h-7 rounded-xl hover:bg-slate-100 text-slate-700 font-mono text-[11px] font-bold transition"
+                    title="Reset Zoom to 100%"
                   >
                     {Math.round(zoom * 100)}%
                   </button>
+                  <div className="w-[1px] h-4 bg-slate-200"></div>
                   <button
                     onClick={handleFitView}
                     className="px-2 h-7 rounded-xl hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center space-x-1 transition"
@@ -3112,6 +3416,11 @@
                   <span className="flex items-center space-x-1">
                     <span className="w-2.5 h-0.5 bg-emerald-500 inline-block"></span>
                     <span>Satisfied Edge</span>
+                  </span>
+                  <span className="text-slate-300">•</span>
+                  <span className="flex items-center space-x-1 text-brand-600 font-semibold">
+                    <i className="fa-solid fa-arrow-right text-[10px]"></i>
+                    <span>Drag handle to link tasks</span>
                   </span>
                   <span className="text-slate-300">•</span>
                   <span>Drag canvas to pan • Scroll to zoom</span>
@@ -3466,8 +3775,9 @@
       const [includeBlocked, setIncludeBlocked] = useState(true); // Toggle for Subsequent Horizon (Waiting on Prerequisites)
       const [typeFilter, setTypeFilter] = useState('all'); // 'all' | 'actions'
 
-      const nodes = graphData.nodes || [];
-      const dependencies = graphData.dependencies || [];
+      const nodes = useMemo(() => (graphData.nodes || []).filter(n => !n.archivedAt), [graphData.nodes]);
+      const activeNodeIds = useMemo(() => new Set(nodes.map(n => n.id)), [nodes]);
+      const dependencies = useMemo(() => (graphData.dependencies || []).filter(d => activeNodeIds.has(d.fromNodeId) && activeNodeIds.has(d.toNodeId)), [graphData.dependencies, activeNodeIds]);
       const readinessMap = graphData.readiness || {};
 
       const nodeMap = useMemo(() => {
@@ -4050,6 +4360,153 @@
       );
     }
 
+    // Archived Goals Mode View
+    function ArchivedGoalsView({ archivedGoals, onUnarchive, onDelete, onBack, showToast }) {
+      const [collapsedMap, setCollapsedMap] = useState({});
+
+      const toggleCollapse = (id) => {
+        setCollapsedMap(prev => ({ ...prev, [id]: !prev[id] }));
+      };
+
+      return (
+        <div className="space-y-6">
+          {/* Top Banner */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center font-bold text-base border border-indigo-200 shadow-2xs">
+                  <i className="fa-solid fa-box-archive"></i>
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-xl font-black tracking-tight text-slate-900">Archived Goals</h3>
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                      {archivedGoals.length}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Completed goals preserved outside of active execution and analytics scope.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={onBack}
+              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition"
+            >
+              <i className="fa-solid fa-arrow-left text-xs"></i>
+              <span>Back to Active Plan</span>
+            </button>
+          </div>
+
+          {/* Goals List or Empty State */}
+          {archivedGoals.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-12 text-center">
+              <div className="w-16 h-16 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center text-2xl mx-auto mb-4">
+                <i className="fa-solid fa-box-archive"></i>
+              </div>
+              <h4 className="text-base font-bold text-slate-800">No archived goals</h4>
+              <p className="text-slate-500 text-xs max-w-md mx-auto mt-1 mb-6 leading-relaxed">
+                When a goal in your active plan reaches <strong>done</strong> status, an <strong>Archive</strong> button appears allowing you to move it here to keep your active workspace uncluttered.
+              </p>
+              <button
+                onClick={onBack}
+                className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-semibold text-xs inline-flex items-center space-x-1.5 shadow"
+              >
+                <i className="fa-solid fa-sitemap text-xs"></i>
+                <span>Go to Active Plan Tree</span>
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {archivedGoals.map(goal => (
+                <div key={goal.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 hover:border-slate-300 transition">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                    <div className="flex items-center space-x-2.5 flex-1 min-w-0">
+                      {goal.children && goal.children.length > 0 ? (
+                        <button
+                          onClick={() => toggleCollapse(goal.id)}
+                          className="text-slate-400 hover:text-slate-600 w-5 text-center"
+                          title={collapsedMap[goal.id] ? "Expand sub-items" : "Collapse sub-items"}
+                        >
+                          <i className={`fa-solid fa-chevron-${collapsedMap[goal.id] ? 'right' : 'down'} text-xs`}></i>
+                        </button>
+                      ) : (
+                        <span className="w-5 text-slate-300 text-center">•</span>
+                      )}
+
+                      <span className="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        done
+                      </span>
+
+                      <span className="px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider bg-indigo-100 text-indigo-800 border border-indigo-200">
+                        goal
+                      </span>
+
+                      <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200 flex items-center space-x-1">
+                        <i className="fa-solid fa-box-archive text-[9px] text-slate-400"></i>
+                        <span>Archived {goal.archivedAt ? new Date(goal.archivedAt).toLocaleDateString() : ''}</span>
+                      </span>
+
+                      <span className="font-bold text-sm text-slate-700 truncate line-through">
+                        {goal.title}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center space-x-2 self-end sm:self-center">
+                      <button
+                        onClick={() => onUnarchive(goal.id)}
+                        className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition shadow-2xs"
+                        title="Restore goal and all child items back into active plan and analytics"
+                      >
+                        <i className="fa-solid fa-rotate-left text-xs"></i>
+                        <span>Restore to Active</span>
+                      </button>
+
+                      <button
+                        onClick={() => onDelete(goal.id)}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg transition"
+                        title="Permanently delete this archived goal"
+                      >
+                        <i className="fa-solid fa-trash text-xs"></i>
+                      </button>
+                    </div>
+                  </div>
+
+                  {goal.description && (
+                    <p className="text-xs text-slate-500 mt-2.5 pl-7">{goal.description}</p>
+                  )}
+
+                  {!collapsedMap[goal.id] && goal.children && goal.children.length > 0 && (
+                    <div className="mt-3 pt-3 pl-7 space-y-2 border-t border-slate-100/70">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        Preserved Subtree ({goal.children.length} items)
+                      </div>
+                      <div className="space-y-1.5">
+                        {goal.children.map(child => (
+                          <div key={child.id} className="flex items-center space-x-2 text-xs py-1.5 px-3 bg-slate-50/80 rounded-xl border border-slate-200/60">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                              child.type === 'milestone' ? 'bg-purple-100 text-purple-800' : 'bg-sky-100 text-sky-800'
+                            }`}>
+                              {child.type.replace('_', ' ')}
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800">
+                              {child.status}
+                            </span>
+                            <span className="font-medium text-slate-700 truncate line-through">{child.title}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function App() {
       const [user, setUser] = useState(null);
       const [workspaces, setWorkspaces] = useState([]);
@@ -4065,6 +4522,7 @@
           if (v === 'print' || window.location.pathname.endsWith('/print')) return 'print';
           if (v === 'dependencies') return 'dependencies';
           if (v === 'analytics') return 'analytics';
+          if (v === 'archive' || v === 'archived') return 'archive';
           return 'tree';
         } catch {
           return 'tree';
@@ -4123,10 +4581,15 @@
       const [showErrorModal, setShowErrorModal] = useState(false);
       const [showNewGoalModal, setShowNewGoalModal] = useState(false);
       const [evidenceModalNode, setEvidenceModalNode] = useState(null);
+      const [addChildModal, setAddChildModal] = useState({ isOpen: false, parentNode: null, defaultType: 'milestone' });
       const [helpModalConfig, setHelpModalConfig] = useState({ isOpen: false, tab: 'guides', targetId: 'getting-started' });
       const [newGoalTitle, setNewGoalTitle] = useState('');
       const [newGoalDesc, setNewGoalDesc] = useState('');
       const [unresolvedErrorCount, setUnresolvedErrorCount] = useState(0);
+
+      const handleOpenAddChild = (parentNode, defaultType = 'milestone') => {
+        setAddChildModal({ isOpen: true, parentNode, defaultType });
+      };
 
       const openHelpTopic = (topicId) => {
         setHelpModalConfig({ isOpen: true, tab: 'guides', targetId: topicId });
@@ -4268,25 +4731,84 @@
         }
       };
 
-      // Tree structure helper
+      // Archive Goal
+      const handleArchiveGoal = async (goalId) => {
+        try {
+          const res = await fetch(`/api/nodes/${goalId}/archive`, { method: 'POST' });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            showToast('Goal moved to Archive!');
+            loadGraph();
+          } else {
+            showToast(data.error || 'Failed to archive goal', 'error');
+          }
+        } catch (err) {
+          showToast('Failed to archive goal', 'error');
+        }
+      };
+
+      // Unarchive Goal
+      const handleUnarchiveGoal = async (goalId) => {
+        try {
+          const res = await fetch(`/api/nodes/${goalId}/unarchive`, { method: 'POST' });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            showToast('Goal restored to active plan!');
+            loadGraph();
+          } else {
+            showToast(data.error || 'Failed to restore goal', 'error');
+          }
+        } catch (err) {
+          showToast('Failed to restore goal', 'error');
+        }
+      };
+
+      // Tree structure helper: Active goals (excluding archived)
       const tree = useMemo(() => {
         const nodeMap = new Map();
         const roots = [];
+        const activeNodes = (graphData.nodes || []).filter(n => !n.archivedAt);
 
-        graphData.nodes.forEach(n => {
+        activeNodes.forEach(n => {
           nodeMap.set(n.id, { ...n, children: [] });
         });
 
-        graphData.nodes.forEach(n => {
+        activeNodes.forEach(n => {
           const item = nodeMap.get(n.id);
           if (n.parentId && nodeMap.has(n.parentId)) {
             nodeMap.get(n.parentId).children.push(item);
-          } else {
+          } else if (n.type === 'goal') {
             roots.push(item);
           }
         });
 
         return roots;
+      }, [graphData.nodes]);
+
+      // Archived goals tree
+      const archivedTree = useMemo(() => {
+        const nodeMap = new Map();
+        const roots = [];
+        const archivedNodes = (graphData.nodes || []).filter(n => !!n.archivedAt);
+
+        archivedNodes.forEach(n => {
+          nodeMap.set(n.id, { ...n, children: [] });
+        });
+
+        archivedNodes.forEach(n => {
+          const item = nodeMap.get(n.id);
+          if (n.parentId && nodeMap.has(n.parentId)) {
+            nodeMap.get(n.parentId).children.push(item);
+          } else if (n.type === 'goal') {
+            roots.push(item);
+          }
+        });
+
+        return roots;
+      }, [graphData.nodes]);
+
+      const archivedCount = useMemo(() => {
+        return (graphData.nodes || []).filter(n => n.type === 'goal' && !!n.archivedAt).length;
       }, [graphData.nodes]);
 
       return (
@@ -4297,39 +4819,45 @@
         }}>
         <div className="flex flex-col min-h-screen">
           {/* Header */}
-          <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-xs">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+          <header className="bg-white/95 backdrop-blur-md border-b border-slate-200/80 sticky top-0 z-20 shadow-xs">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
               {/* Left: Brand + Workspace & Version */}
-              <div className="flex items-center space-x-3 sm:space-x-4">
+              <div className="flex items-center space-x-2.5 sm:space-x-3 shrink-0">
                 <div 
-                  className="flex items-center space-x-2.5 cursor-pointer group" 
+                  className="flex items-center space-x-2.5 cursor-pointer group select-none shrink-0" 
                   onClick={() => switchView('tree')}
                   title="Goal Guru Companion - Return to Plan Tree"
                 >
-                  <div className="w-9 h-9 rounded-xl bg-brand-600 group-hover:bg-brand-700 text-white flex items-center justify-center font-bold text-lg shadow-sm transition">
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-500 group-hover:from-brand-700 group-hover:to-indigo-600 text-white flex items-center justify-center font-bold text-base shadow-sm ring-1 ring-black/5 group-hover:scale-105 transition-all duration-150 shrink-0">
                     <i className="fa-solid fa-compass"></i>
                   </div>
-                  <div>
-                    <h1 className="text-base sm:text-lg font-black tracking-tight text-slate-900 leading-none">Goal Guru</h1>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-brand-600">Companion v1.0</span>
+                  <div className="flex flex-col justify-center shrink-0">
+                    <div className="flex items-center gap-1.5 leading-none">
+                      <h1 className="text-base sm:text-lg font-black tracking-tight text-slate-900 leading-none whitespace-nowrap">Goal Guru</h1>
+                      <span className="text-[10px] font-bold text-brand-600 bg-brand-50 border border-brand-200/70 px-1.5 py-0.5 rounded-full leading-none whitespace-nowrap">v1.0</span>
+                    </div>
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 leading-none mt-1 whitespace-nowrap">Companion</span>
                   </div>
                 </div>
 
                 {/* Workspace Selector & Monotonic Version integrated */}
-                <div className="flex items-center space-x-1.5 bg-slate-100 hover:bg-slate-200/70 px-2.5 py-1.5 rounded-lg border border-slate-200 transition">
-                  <i className="fa-solid fa-layer-group text-slate-500 text-xs"></i>
-                  <select 
-                    value={currentWorkspaceId || ''} 
-                    onChange={(e) => setCurrentWorkspaceId(e.target.value)}
-                    className="bg-transparent text-xs font-semibold text-slate-800 outline-none cursor-pointer pr-1"
-                    title="Active Workspace"
-                  >
-                    {workspaces.map(ws => (
-                      <option key={ws.id} value={ws.id}>{ws.name}</option>
-                    ))}
-                  </select>
+                <div className="flex items-center bg-slate-100 hover:bg-slate-200/70 border border-slate-200/80 rounded-xl px-2.5 py-1.5 gap-1.5 transition-colors shadow-2xs shrink-0">
+                  <i className="fa-solid fa-layer-group text-slate-400 text-xs shrink-0"></i>
+                  <div className="relative flex items-center shrink-0">
+                    <select 
+                      value={currentWorkspaceId || ''} 
+                      onChange={(e) => setCurrentWorkspaceId(e.target.value)}
+                      className="bg-transparent text-xs font-semibold text-slate-800 outline-none cursor-pointer pr-4 appearance-none whitespace-nowrap"
+                      title="Active Workspace"
+                    >
+                      {workspaces.map(ws => (
+                        <option key={ws.id} value={ws.id}>{ws.name}</option>
+                      ))}
+                    </select>
+                    <i className="fa-solid fa-chevron-down text-[9px] text-slate-400 pointer-events-none absolute right-0"></i>
+                  </div>
                   <span 
-                    className="text-[10px] font-mono font-bold bg-white text-slate-600 px-1.5 py-0.5 rounded border border-slate-200 shadow-2xs" 
+                    className="text-[10px] font-mono font-bold bg-white text-slate-600 px-1.5 py-0.5 rounded-md border border-slate-200/90 shadow-2xs shrink-0 whitespace-nowrap" 
                     title="Authoritative State Version (increments on every proposal commit to prevent collisions)"
                   >
                     v{graphData.stateVersion}
@@ -4338,13 +4866,13 @@
               </div>
 
               {/* Center: Primary Navigation Tabs */}
-              <nav className="hidden md:flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/60 shadow-inner">
+              <nav className="hidden md:flex items-center bg-slate-100/90 p-1 rounded-xl border border-slate-200/70 shadow-inner gap-0.5 shrink-0">
                 <button
                   onClick={() => switchView('tree')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 ${
                     activeView === 'tree' 
-                      ? 'bg-white text-brand-700 shadow-xs' 
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-white text-brand-700 shadow-xs border border-slate-200/70' 
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/50 border border-transparent'
                   }`}
                   title="Plan Tree: Goal, milestone, and action containment hierarchy"
                 >
@@ -4354,10 +4882,10 @@
 
                 <button
                   onClick={() => switchView('dependencies')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 ${
                     activeView === 'dependencies' 
-                      ? 'bg-white text-brand-700 shadow-xs' 
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-white text-brand-700 shadow-xs border border-slate-200/70' 
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/50 border border-transparent'
                   }`}
                   title="Relations & Dependencies: Directed dependency graph and unblockers"
                 >
@@ -4367,63 +4895,89 @@
 
                 <button
                   onClick={() => switchView('analytics')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 ${
                     activeView === 'analytics' 
-                      ? 'bg-white text-brand-700 shadow-xs' 
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-white text-brand-700 shadow-xs border border-slate-200/70' 
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/50 border border-transparent'
                   }`}
                   title="Progress Analytics: Multi-ring dials and velocity"
                 >
                   <i className="fa-solid fa-chart-pie text-xs"></i>
                   <span>Analytics</span>
-                  <span className="text-[10px] text-emerald-600 font-mono font-bold">
+                  <span className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full whitespace-nowrap transition-colors ${
+                    activeView === 'analytics' 
+                      ? 'bg-emerald-100 text-emerald-800' 
+                      : 'bg-emerald-50 text-emerald-600 border border-emerald-200/60'
+                  }`}>
                     {progressSummary.overallPercentage}%
                   </span>
                 </button>
 
                 <button
                   onClick={() => switchView('print')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 ${
                     activeView === 'print' 
-                      ? 'bg-white text-brand-700 shadow-xs' 
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-white text-brand-700 shadow-xs border border-slate-200/70' 
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/50 border border-transparent'
                   }`}
                   title="Action Checklist: Printer-ready execution sheet"
                 >
                   <i className="fa-solid fa-list-check text-xs"></i>
                   <span>Checklist</span>
                 </button>
+
+                <button
+                  onClick={() => switchView('archive')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 ${
+                    activeView === 'archive' 
+                      ? 'bg-white text-brand-700 shadow-xs border border-slate-200/70' 
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/50 border border-transparent'
+                  }`}
+                  title="Archive: Completed goals preserved outside active scope"
+                >
+                  <i className="fa-solid fa-box-archive text-xs"></i>
+                  <span>Archive</span>
+                  {archivedCount > 0 && (
+                    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full whitespace-nowrap transition-colors ${
+                      activeView === 'archive'
+                        ? 'bg-slate-200 text-slate-800'
+                        : 'bg-slate-200/80 text-slate-600'
+                    }`}>
+                      {archivedCount}
+                    </span>
+                  )}
+                </button>
               </nav>
 
               {/* Right: Primary Actions & Utility Icons */}
-              <div className="flex items-center space-x-2 sm:space-x-3">
+              <div className="flex items-center space-x-2 sm:space-x-2.5 shrink-0">
                 {/* Primary Actions */}
                 <button
                   onClick={() => setShowImportModal(true)}
                   title="Import LLM proposal from clipboard"
-                  className="hidden sm:flex px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg font-semibold text-xs items-center space-x-1.5 transition shadow-2xs"
+                  className="hidden sm:flex px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100/90 active:bg-emerald-200 text-emerald-700 border border-emerald-200/80 rounded-xl font-semibold text-xs items-center space-x-1.5 transition shadow-2xs whitespace-nowrap shrink-0"
                 >
-                  <i className="fa-solid fa-clipboard-check text-emerald-600 text-xs"></i>
+                  <i className="fa-solid fa-file-import text-emerald-600 text-xs"></i>
                   <span>Import Proposal</span>
                 </button>
 
                 <button
                   onClick={() => setShowNewGoalModal(true)}
                   title="Create new strategic goal"
-                  className="px-3.5 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-semibold text-xs flex items-center space-x-1.5 shadow-sm transition"
+                  className="px-3.5 py-1.5 bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-700 hover:to-indigo-700 active:scale-[0.98] text-white rounded-xl font-semibold text-xs flex items-center space-x-1.5 shadow-sm hover:shadow transition-all whitespace-nowrap shrink-0"
                 >
                   <i className="fa-solid fa-plus text-xs"></i>
                   <span>New Goal</span>
                 </button>
 
-                <div className="h-5 w-px bg-slate-200"></div>
+                <div className="h-5 w-px bg-slate-200 shrink-0"></div>
 
                 {/* Utilities Group */}
-                <div className="flex items-center space-x-1">
+                <div className="flex items-center space-x-0.5 sm:space-x-1 shrink-0">
                   <button 
                     onClick={handleUndo} 
                     title="Undo last proposal commit (Ctrl+Z)"
-                    className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
+                    className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-slate-900 hover:bg-slate-100 active:bg-slate-200 rounded-lg transition-colors shrink-0"
                   >
                     <i className="fa-solid fa-rotate-left text-xs"></i>
                   </button>
@@ -4431,7 +4985,7 @@
                   <button 
                     onClick={() => setShowAgentSetupModal(true)}
                     title="Setup LLM Agent Companion (MCP Server & Prompts)"
-                    className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-brand-600 hover:bg-slate-100 rounded-lg transition"
+                    className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-brand-600 hover:bg-slate-100 active:bg-slate-200 rounded-lg transition-colors shrink-0"
                   >
                     <i className="fa-solid fa-robot text-xs"></i>
                   </button>
@@ -4439,7 +4993,7 @@
                   <button 
                     onClick={() => setShowErrorModal(true)}
                     title={unresolvedErrorCount > 0 ? `${unresolvedErrorCount} Unresolved System Errors` : 'System Telemetry & Error Log'}
-                    className={`relative w-8 h-8 flex items-center justify-center rounded-lg transition ${
+                    className={`relative w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 ${
                       unresolvedErrorCount > 0 
                         ? 'text-red-600 bg-red-50 hover:bg-red-100' 
                         : 'text-slate-500 hover:text-red-600 hover:bg-slate-100'
@@ -4447,7 +5001,7 @@
                   >
                     <i className="fa-solid fa-bug text-xs"></i>
                     {unresolvedErrorCount > 0 && (
-                      <span className="absolute -top-1 -right-1 px-1 min-w-[14px] h-[14px] text-[9px] font-bold bg-red-600 text-white rounded-full flex items-center justify-center">
+                      <span className="absolute -top-1 -right-1 px-1 min-w-[14px] h-[14px] text-[9px] font-bold bg-red-600 text-white rounded-full flex items-center justify-center ring-2 ring-white animate-pulse">
                         {unresolvedErrorCount}
                       </span>
                     )}
@@ -4456,20 +5010,20 @@
                   <button 
                     onClick={() => openHelpTopic(activeView === 'dependencies' ? 'goals-and-actions' : activeView === 'analytics' ? 'progress-analytics' : 'getting-started')}
                     title="Help Guides & Domain Glossary"
-                    className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-brand-600 hover:bg-slate-100 rounded-lg transition"
+                    className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-brand-600 hover:bg-slate-100 active:bg-slate-200 rounded-lg transition-colors shrink-0"
                   >
                     <i className="fa-solid fa-circle-question text-xs"></i>
                   </button>
                 </div>
 
-                <div className="h-5 w-px bg-slate-200"></div>
+                <div className="h-5 w-px bg-slate-200 shrink-0"></div>
 
                 {/* User avatar badge */}
                 <div 
-                  className="flex items-center space-x-2 cursor-default" 
+                  className="flex items-center space-x-2 cursor-default shrink-0" 
                   title={user?.displayName ? `${user.displayName} (Local User / Google Auth)` : 'Local User'}
                 >
-                  <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-slate-700 to-slate-900 text-white flex items-center justify-center font-bold text-xs ring-2 ring-slate-100 shadow-2xs shrink-0 select-none">
                     {user?.displayName?.[0] || 'U'}
                   </div>
                 </div>
@@ -4477,11 +5031,11 @@
             </div>
 
             {/* Mobile View Switcher Tab Bar */}
-            <div className="md:hidden border-t border-slate-100 px-3 py-1.5 flex items-center justify-between bg-slate-50/70">
+            <div className="md:hidden border-t border-slate-200/80 px-2 py-1.5 flex items-center justify-around bg-white/95 backdrop-blur-md shadow-2xs">
               <button
                 onClick={() => switchView('tree')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 ${
-                  activeView === 'tree' ? 'bg-white text-brand-700 shadow-xs' : 'text-slate-600'
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition whitespace-nowrap ${
+                  activeView === 'tree' ? 'bg-brand-50 text-brand-700 font-bold' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <i className="fa-solid fa-sitemap text-xs"></i>
@@ -4489,30 +5043,45 @@
               </button>
               <button
                 onClick={() => switchView('dependencies')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 ${
-                  activeView === 'dependencies' ? 'bg-white text-brand-700 shadow-xs' : 'text-slate-600'
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition whitespace-nowrap ${
+                  activeView === 'dependencies' ? 'bg-brand-50 text-brand-700 font-bold' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <i className="fa-solid fa-network-wired text-xs"></i>
-                <span>Dependencies</span>
+                <span>Deps</span>
               </button>
               <button
                 onClick={() => switchView('analytics')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 ${
-                  activeView === 'analytics' ? 'bg-white text-brand-700 shadow-xs' : 'text-slate-600'
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition whitespace-nowrap ${
+                  activeView === 'analytics' ? 'bg-brand-50 text-brand-700 font-bold' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <i className="fa-solid fa-chart-pie text-xs"></i>
                 <span>Analytics</span>
+                <span className="text-[9px] font-mono font-bold text-emerald-600">{progressSummary.overallPercentage}%</span>
               </button>
               <button
                 onClick={() => switchView('print')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 ${
-                  activeView === 'print' ? 'bg-white text-brand-700 shadow-xs' : 'text-slate-600'
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition whitespace-nowrap ${
+                  activeView === 'print' ? 'bg-brand-50 text-brand-700 font-bold' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <i className="fa-solid fa-list-check text-xs"></i>
                 <span>Checklist</span>
+              </button>
+              <button
+                onClick={() => switchView('archive')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition whitespace-nowrap ${
+                  activeView === 'archive' ? 'bg-brand-50 text-brand-700 font-bold' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <i className="fa-solid fa-box-archive text-xs"></i>
+                <span>Archive</span>
+                {archivedCount > 0 && (
+                  <span className="text-[9px] bg-slate-200 text-slate-700 px-1 rounded-full font-bold">
+                    {archivedCount}
+                  </span>
+                )}
               </button>
             </div>
           </header>
@@ -4526,6 +5095,7 @@
                   {activeView === 'tree' ? 'Active Execution Plan' : 
                    activeView === 'analytics' ? 'Progress Analytics' :
                    activeView === 'dependencies' ? 'Relations & Dependencies' : 
+                   activeView === 'archive' ? 'Archived Goals' :
                    'Action Checklist'}
                 </h2>
                 <p className="text-sm text-slate-600 mt-1">
@@ -4535,6 +5105,8 @@
                     ? 'Real-time multi-ring progress tracking, velocity metrics, and execution readiness pipeline.'
                     : activeView === 'dependencies'
                     ? 'Visualize and manage parent-child containment relations, cross-cutting prerequisite blockers, and bottleneck paths.'
+                    : activeView === 'archive'
+                    ? 'Preserved completed goals outside active scope. Can be inspected or restored at any time.'
                     : 'Printer-friendly execution checklist organized in logical causal order with checkable boxes and attached notes.'
                   }
                 </p>
@@ -4598,6 +5170,14 @@
                 onExport={(n) => setExportModalNode(n)}
                 onAddEvidence={(n) => setEvidenceModalNode(n)}
               />
+            ) : activeView === 'archive' ? (
+              <ArchivedGoalsView
+                archivedGoals={archivedTree}
+                onUnarchive={handleUnarchiveGoal}
+                onDelete={handleDeleteNode}
+                onBack={() => switchView('tree')}
+                showToast={showToast}
+              />
             ) : (
               <div>
                 {/* Collapsible Overview Banner with Multi-Ring Chart */}
@@ -4609,22 +5189,51 @@
 
                 {/* Tree Container */}
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                  {archivedCount > 0 && (
+                    <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-100 text-xs text-slate-500">
+                      <span className="flex items-center space-x-1.5">
+                        <i className="fa-solid fa-circle-info text-slate-400"></i>
+                        <span>Showing active goals. <strong>{archivedCount}</strong> completed goal{archivedCount === 1 ? ' is' : 's are'} in the archive.</span>
+                      </span>
+                      <button
+                        onClick={() => switchView('archive')}
+                        className="text-brand-600 hover:text-brand-700 font-semibold flex items-center space-x-1 transition"
+                      >
+                        <i className="fa-solid fa-box-archive text-[11px]"></i>
+                        <span>View Archive</span>
+                      </button>
+                    </div>
+                  )}
+
                   {tree.length === 0 ? (
                     <div className="text-center py-16">
                       <div className="w-16 h-16 rounded-full bg-brand-50 text-brand-600 flex items-center justify-center text-2xl mx-auto mb-4">
                         <i className="fa-solid fa-bullseye"></i>
                       </div>
-                      <h3 className="text-lg font-bold text-slate-800">No goals defined yet</h3>
+                      <h3 className="text-lg font-bold text-slate-800">No active goals</h3>
                       <p className="text-slate-500 text-sm max-w-sm mx-auto mt-1 mb-6">
-                        Define your first goal to begin planning and collaborating with your LLM advisor.
+                        {archivedCount > 0
+                          ? `All goals are currently archived. Create a new goal or restore an archived goal.`
+                          : `Define your first goal to begin planning and collaborating with your LLM advisor.`}
                       </p>
-                      <button
-                        onClick={() => setShowNewGoalModal(true)}
-                        className="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-medium text-sm inline-flex items-center space-x-2 shadow"
-                      >
-                        <i className="fa-solid fa-plus"></i>
-                        <span>Create Your First Goal</span>
-                      </button>
+                      <div className="flex items-center justify-center gap-3">
+                        <button
+                          onClick={() => setShowNewGoalModal(true)}
+                          className="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-medium text-sm inline-flex items-center space-x-2 shadow"
+                        >
+                          <i className="fa-solid fa-plus"></i>
+                          <span>Create New Goal</span>
+                        </button>
+                        {archivedCount > 0 && (
+                          <button
+                            onClick={() => switchView('archive')}
+                            className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-medium text-sm inline-flex items-center space-x-2 transition"
+                          >
+                            <i className="fa-solid fa-box-archive"></i>
+                            <span>View Archive</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ) : (
                     <div className="space-y-4">
@@ -4638,7 +5247,9 @@
                           onToggleStatus={handleToggleStatus}
                           onDelete={handleDeleteNode}
                           onAddEvidence={(n) => setEvidenceModalNode(n)}
+                          onArchive={handleArchiveGoal}
                           onRefreshGraph={loadGraph}
+                          onAddChild={handleOpenAddChild}
                           showToast={showToast}
                         />
                       ))}
@@ -4764,6 +5375,21 @@
             />
           )}
 
+          {/* Add Child Node Modal (Milestones, Actions, Steps) */}
+          {addChildModal.isOpen && addChildModal.parentNode && (
+            <AddChildNodeModal
+              workspaceId={currentWorkspaceId}
+              parentNode={addChildModal.parentNode}
+              defaultType={addChildModal.defaultType}
+              onClose={() => setAddChildModal({ isOpen: false, parentNode: null, defaultType: 'milestone' })}
+              onSuccess={() => {
+                setAddChildModal({ isOpen: false, parentNode: null, defaultType: 'milestone' });
+                loadGraph();
+              }}
+              showToast={showToast}
+            />
+          )}
+
           {/* Help and Domain Glossary Modal */}
           <HelpModal 
             isOpen={helpModalConfig.isOpen}
@@ -4789,13 +5415,14 @@
     }
 
     // Node Item Recursive Component
-    function NodeItem({ node, allNodes = [], readinessMap, onExport, onToggleStatus, onDelete, onAddEvidence, onRefreshGraph, showToast }) {
+    function NodeItem({ node, allNodes = [], readinessMap, onExport, onToggleStatus, onDelete, onAddEvidence, onArchive, onUnarchive, onRefreshGraph, onAddChild, showToast }) {
       const [collapsed, setCollapsed] = useState(false);
       const [showEvidence, setShowEvidence] = useState(true);
       const readinessInfo = readinessMap?.[node.id];
       const isBlocked = readinessInfo?.readiness === 'blocked';
       const evidenceList = node.evidence || [];
       const evidenceCount = evidenceList.length;
+      const isMilestone = node.type === 'milestone';
 
       // Subtree progress for container nodes with children
       const nodeProgress = useMemo(() => {
@@ -4849,22 +5476,28 @@
       };
 
       return (
-        <div className="border border-slate-200 rounded-xl bg-slate-50/50 p-3 hover:border-slate-300 transition">
+        <div className={`border rounded-xl p-3 transition ${
+          isMilestone 
+            ? 'border-purple-300 bg-purple-50/25 hover:border-purple-400 shadow-2xs ring-1 ring-purple-200/50' 
+            : node.type === 'goal'
+            ? 'border-indigo-200 bg-slate-50/70 hover:border-indigo-300 shadow-2xs'
+            : 'border-slate-200 bg-slate-50/50 hover:border-slate-300'
+        }`}>
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center space-x-2.5 flex-1 min-w-0">
               {node.children.length > 0 ? (
-                <button onClick={() => setCollapsed(!collapsed)} className="text-slate-400 hover:text-slate-600 w-5 text-center">
+                <button onClick={() => setCollapsed(!collapsed)} className="text-slate-400 hover:text-slate-600 w-5 text-center shrink-0">
                   <i className={`fa-solid fa-chevron-${collapsed ? 'right' : 'down'} text-xs`}></i>
                 </button>
               ) : (
-                <span className="w-5 text-slate-300 text-center">•</span>
+                <span className="w-5 text-slate-300 text-center shrink-0">•</span>
               )}
 
               {/* Status toggle button */}
               <button 
                 onClick={() => onToggleStatus(node)}
                 title="Click to advance status"
-                className={`px-2 py-0.5 rounded text-xs font-semibold border transition ${statusStyles[node.status]}`}
+                className={`px-2 py-0.5 rounded text-xs font-semibold border transition shrink-0 whitespace-nowrap ${statusStyles[node.status]}`}
               >
                 {node.status.replace('_', ' ')}
               </button>
@@ -4876,8 +5509,10 @@
               />
 
               {/* Type Badge */}
-              <span className={`px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider border ${typeStyles[node.type]}`}>
-                {node.type.replace('_', ' ')}
+              <span className={`px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider border flex items-center space-x-1 shrink-0 whitespace-nowrap ${typeStyles[node.type]}`}>
+                {isMilestone && <i className="fa-solid fa-flag text-[10px] text-purple-600 mr-1"></i>}
+                {node.type === 'goal' && <i className="fa-solid fa-bullseye text-[10px] text-indigo-600 mr-1"></i>}
+                <span>{node.type.replace('_', ' ')}</span>
               </span>
               <ContextHelpButton
                 title={`${node.type.replace('_', ' ')} Node`}
@@ -4886,26 +5521,39 @@
                 topicId="goals-and-actions"
               />
 
-              {/* Title & Description */}
-              <div className="truncate">
-                <span className={`font-semibold text-sm ${node.status === 'done' ? 'line-through text-slate-400' : 'text-slate-900'}`}>
-                  {node.title}
-                </span>
-                {node.description && (
-                  <span className="text-xs text-slate-500 ml-2 font-normal truncate hidden md:inline">
-                    — {node.description}
+              {/* Title & Description - Separate lines so description never cuts off the title */}
+              <div className="flex-1 min-w-0 flex flex-col justify-center">
+                <div className="flex items-center space-x-2 min-w-0">
+                  {isMilestone && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded border border-purple-200 shrink-0">
+                      Phase Gate
+                    </span>
+                  )}
+                  <span 
+                    title={node.title}
+                    className={`font-semibold text-sm truncate ${node.status === 'done' ? 'line-through text-slate-400' : isMilestone ? 'text-purple-950 font-bold' : 'text-slate-900'}`}
+                  >
+                    {node.title}
                   </span>
+                </div>
+                {node.description && (
+                  <p 
+                    title={node.description}
+                    className="text-xs text-slate-500 font-normal truncate mt-0.5 leading-snug"
+                  >
+                    {node.description}
+                  </p>
                 )}
               </div>
 
               {/* Subtree Progress: Mini Ring for Goal Nodes, Linear Pill for other container nodes */}
               {nodeProgress && node.type === 'goal' ? (
-                <div className="hidden sm:inline-flex items-center">
+                <div className="hidden sm:inline-flex items-center shrink-0">
                   <MiniProgressRing percentage={nodeProgress.percentage} />
                 </div>
               ) : nodeProgress ? (
                 <div 
-                  className="hidden sm:flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-[11px] font-semibold text-slate-700 flex-shrink-0"
+                  className="hidden sm:flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-[11px] font-semibold text-slate-700 shrink-0"
                   title={`${nodeProgress.completed} of ${nodeProgress.total} items completed in subtree`}
                 >
                   <div className="w-8 h-1.5 bg-slate-200 rounded-full overflow-hidden">
@@ -4922,9 +5570,9 @@
 
               {/* Dynamic Readiness Badge (ADR 0003) */}
               {isBlocked && (
-                <div className="flex items-center space-x-1">
+                <div className="flex items-center space-x-1 shrink-0">
                   <span 
-                    className="px-2 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded text-xs font-medium flex items-center space-x-1 cursor-help" 
+                    className="px-2 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded text-xs font-medium flex items-center space-x-1 cursor-help whitespace-nowrap" 
                     title={blockerTitles.length > 0 ? `Blocked by: ${blockerTitles.join(', ')}` : 'Blocked by prerequisites'}
                   >
                     <i className="fa-solid fa-lock text-[10px]"></i>
@@ -4945,7 +5593,7 @@
                   type="button"
                   onClick={() => setShowEvidence(!showEvidence)}
                   title={`${showEvidence ? 'Hide' : 'Show'} ${evidenceCount} attached notes/evidence`}
-                  className="px-2 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 flex items-center space-x-1 transition flex-shrink-0"
+                  className="px-2 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 flex items-center space-x-1 transition shrink-0 whitespace-nowrap"
                 >
                   <i className="fa-regular fa-note-sticky text-[10px]"></i>
                   <span>{evidenceCount}</span>
@@ -4954,14 +5602,58 @@
             </div>
 
             {/* Actions */}
-            <div className="flex items-center space-x-1">
+            <div className="flex items-center space-x-1 shrink-0">
+              {/* Quick 1-Click Child Authoring (ADR 0001, ADR 0004) */}
+              {(node.type === 'goal' || node.type === 'sub_goal') && (
+                <>
+                  <button 
+                    onClick={() => onAddChild && onAddChild(node, 'milestone')} 
+                    title="Add sequential milestone under this goal"
+                    className="px-2.5 py-1 text-xs font-semibold bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg flex items-center space-x-1 border border-purple-200 transition shadow-2xs"
+                  >
+                    <i className="fa-solid fa-flag text-[10px]"></i>
+                    <span>+ Milestone</span>
+                  </button>
+                  <button 
+                    onClick={() => onAddChild && onAddChild(node, 'action')} 
+                    title="Add action directly under this goal"
+                    className="px-2 py-1 text-xs font-medium bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-lg flex items-center space-x-1 border border-sky-200 transition shadow-2xs"
+                  >
+                    <i className="fa-solid fa-plus text-[10px]"></i>
+                    <span>Action</span>
+                  </button>
+                </>
+              )}
+
+              {node.type === 'milestone' && (
+                <button 
+                  onClick={() => onAddChild && onAddChild(node, 'action')} 
+                  title="Add action under this milestone"
+                  className="px-2.5 py-1 text-xs font-semibold bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-lg flex items-center space-x-1 border border-sky-200 transition shadow-2xs"
+                >
+                  <i className="fa-solid fa-plus text-[10px]"></i>
+                  <span>+ Action</span>
+                </button>
+              )}
+
+              {(node.type === 'action' || node.type === 'sub_action') && (
+                <button 
+                  onClick={() => onAddChild && onAddChild(node, 'sub_action')} 
+                  title="Add sub-action step under this action"
+                  className="px-2 py-1 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg flex items-center space-x-1 border border-slate-200 transition shadow-2xs"
+                >
+                  <i className="fa-solid fa-plus text-[10px]"></i>
+                  <span>+ Step</span>
+                </button>
+              )}
+
               <button 
                 onClick={() => onAddEvidence && onAddEvidence(node)} 
                 title="Add note or information to this node"
-                className="px-2.5 py-1 text-xs font-medium bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg flex items-center space-x-1 border border-amber-200 transition"
+                className="px-2 py-1 text-xs font-medium bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg flex items-center space-x-1 border border-amber-200 transition"
               >
                 <i className="fa-solid fa-plus text-[10px]"></i>
-                <span>Note</span>
+                <span className="hidden sm:inline">Note</span>
               </button>
 
               <button 
@@ -4972,6 +5664,30 @@
                 <i className="fa-solid fa-paper-plane text-[10px]"></i>
                 <span>Ask AI</span>
               </button>
+
+              {/* Archive Goal button (for completed active goals) */}
+              {node.type === 'goal' && !node.archivedAt && node.status === 'done' && (
+                <button 
+                  onClick={() => onArchive && onArchive(node.id)} 
+                  title="Archive completed goal (moves out of active scope and analytics)"
+                  className="px-2.5 py-1 text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg flex items-center space-x-1 border border-indigo-200 transition shadow-2xs"
+                >
+                  <i className="fa-solid fa-box-archive text-[10px]"></i>
+                  <span>Archive</span>
+                </button>
+              )}
+
+              {/* Restore Goal button (for archived goals) */}
+              {node.type === 'goal' && !!node.archivedAt && (
+                <button 
+                  onClick={() => onUnarchive && onUnarchive(node.id)} 
+                  title="Restore goal to active plan"
+                  className="px-2.5 py-1 text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg flex items-center space-x-1 border border-emerald-200 transition shadow-2xs"
+                >
+                  <i className="fa-solid fa-rotate-left text-[10px]"></i>
+                  <span>Restore</span>
+                </button>
+              )}
 
               <button 
                 onClick={() => onDelete(node.id)}
@@ -5060,12 +5776,249 @@
                   onToggleStatus={onToggleStatus} 
                   onDelete={onDelete} 
                   onAddEvidence={onAddEvidence}
+                  onArchive={onArchive}
+                  onUnarchive={onUnarchive}
                   onRefreshGraph={onRefreshGraph}
+                  onAddChild={onAddChild}
                   showToast={showToast}
                 />
               ))}
             </div>
           )}
+        </div>
+      );
+    }
+
+    // Add Child Node Modal (Milestone, Action, Step)
+    function AddChildNodeModal({ workspaceId, parentNode, defaultType = 'milestone', onClose, onSuccess, showToast }) {
+      const [title, setTitle] = useState('');
+      const [description, setDescription] = useState('');
+      const [inputs, setInputs] = useState('');
+      const [expectedOutputs, setExpectedOutputs] = useState('');
+      const [saving, setSaving] = useState(false);
+
+      // Determine valid child types based on parent type (ADR 0001, ADR 0004)
+      const allowedTypes = useMemo(() => {
+        if (!parentNode) return [];
+        if (parentNode.type === 'goal' || parentNode.type === 'sub_goal') {
+          return [
+            { type: 'milestone', label: 'Milestone (Major Checkpoint / Phase Gate)', icon: 'fa-flag', color: 'text-purple-600' },
+            { type: 'action', label: 'Action (Direct Executable Task)', icon: 'fa-bolt', color: 'text-sky-600' },
+            { type: 'sub_goal', label: 'Sub-Goal (Nested Strategic Objective)', icon: 'fa-bullseye', color: 'text-blue-600' },
+          ];
+        }
+        if (parentNode.type === 'milestone') {
+          return [
+            { type: 'action', label: 'Action (Executable Task within Milestone)', icon: 'fa-bolt', color: 'text-sky-600' },
+          ];
+        }
+        if (parentNode.type === 'action' || parentNode.type === 'sub_action') {
+          return [
+            { type: 'sub_action', label: 'Sub-action / Step (Detailed Executable Step)', icon: 'fa-list-check', color: 'text-slate-600' },
+          ];
+        }
+        return [];
+      }, [parentNode]);
+
+      const [selectedType, setSelectedType] = useState(() => {
+        const match = allowedTypes.find(t => t.type === defaultType);
+        return match ? match.type : (allowedTypes[0]?.type || 'action');
+      });
+
+      useEffect(() => {
+        const match = allowedTypes.find(t => t.type === defaultType);
+        setSelectedType(match ? match.type : (allowedTypes[0]?.type || 'action'));
+      }, [defaultType, allowedTypes]);
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (!title.trim() || !selectedType || !parentNode) return;
+
+        setSaving(true);
+        try {
+          const res = await fetch(`/api/workspaces/${workspaceId}/nodes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: title.trim(),
+              description: description.trim() || undefined,
+              type: selectedType,
+              parentId: parentNode.id,
+              inputs: inputs.trim() || undefined,
+              expectedOutputs: expectedOutputs.trim() || undefined,
+              status: 'todo',
+            })
+          });
+
+          if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.error || 'Failed to create node');
+          }
+
+          showToast(`Created ${selectedType.replace('_', ' ')} "${title.trim()}" successfully!`);
+          onSuccess();
+        } catch (err) {
+          showToast(err.message || 'Failed to create child node', 'error');
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      if (!parentNode) return null;
+
+      return (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                    <i className={`fa-solid ${selectedType === 'milestone' ? 'fa-flag text-purple-600' : 'fa-plus-circle text-brand-600'}`}></i>
+                    <span>Add {selectedType === 'milestone' ? 'Milestone' : selectedType === 'action' ? 'Action' : selectedType === 'sub_goal' ? 'Sub-Goal' : 'Step'}</span>
+                  </h3>
+                  <ContextHelpButton
+                    title="Plan Decompositions"
+                    summary="Add intermediate milestones and concrete actions to systematically decompose high-level goals into executable units."
+                    termId={selectedType === 'milestone' ? 'milestone' : selectedType === 'action' ? 'action' : 'plan-structure'}
+                    topicId="goals-and-actions"
+                  />
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Under parent: <span className="font-semibold text-slate-700">{parentNode.title}</span> ({parentNode.type.replace('_', ' ')})
+                </p>
+              </div>
+              <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+                <i className="fa-solid fa-xmark text-lg"></i>
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+              {allowedTypes.length > 1 && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Node Type
+                  </label>
+                  <div className="grid grid-cols-1 gap-2">
+                    {allowedTypes.map(t => (
+                      <label 
+                        key={t.type}
+                        className={`flex items-center space-x-3 p-2.5 rounded-xl border text-xs cursor-pointer transition ${
+                          selectedType === t.type 
+                            ? 'border-brand-500 bg-brand-50/60 font-semibold text-slate-900 ring-1 ring-brand-500' 
+                            : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="childType"
+                          value={t.type}
+                          checked={selectedType === t.type}
+                          onChange={(e) => setSelectedType(e.target.value)}
+                          className="text-brand-600 focus:ring-brand-500"
+                        />
+                        <i className={`fa-solid ${t.icon} ${t.color}`}></i>
+                        <span>{t.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Title <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder={
+                    selectedType === 'milestone'
+                      ? 'e.g. M1: Core Architecture & Schema Finalized'
+                      : selectedType === 'action'
+                      ? 'e.g. Implement Fastify REST Endpoints'
+                      : 'e.g. Write unit test assertions'
+                  }
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Description / Deliverable Criteria
+                </label>
+                <textarea
+                  rows="2"
+                  placeholder={
+                    selectedType === 'milestone'
+                      ? 'Phase gate criteria: What outcome certifies completion of this milestone?'
+                      : 'What does this step involve and deliver?'
+                  }
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+              </div>
+
+              {selectedType !== 'sub_goal' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">
+                      Inputs (Prerequisites)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Design specs, API schema"
+                      value={inputs}
+                      onChange={(e) => setInputs(e.target.value)}
+                      className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">
+                      Expected Outputs
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Passing tests, deployed endpoint"
+                      value={expectedOutputs}
+                      onChange={(e) => setExpectedOutputs(e.target.value)}
+                      className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving || !title.trim()}
+                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white rounded-lg font-medium shadow flex items-center space-x-1.5"
+                >
+                  {saving ? (
+                    <>
+                      <i className="fa-solid fa-spinner fa-spin text-xs"></i>
+                      <span>Creating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <i className="fa-solid fa-plus text-xs"></i>
+                      <span>Create {selectedType.replace('_', ' ')}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       );
     }
@@ -5525,16 +6478,16 @@
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {[
-                      { id: 'create_plan', label: 'Create Plan', icon: 'fa-sitemap' },
-                      { id: 'action_assistance', label: 'Action Assist', icon: 'fa-lightbulb' },
-                      { id: 'report_progress', label: 'Report Progress', icon: 'fa-check-double' },
-                      { id: 'replan', label: 'Replan', icon: 'fa-arrows-rotate' },
+                      { id: 'create_plan', label: 'Create Plan', icon: 'fa-sitemap', desc: 'Decompose into milestones & tasks' },
+                      { id: 'action_assistance', label: 'Action Assist', icon: 'fa-lightbulb', desc: 'Step advice & research (no edits)' },
+                      { id: 'report_progress', label: 'Report Progress', icon: 'fa-check-double', desc: 'Log notes & mark tasks done' },
+                      { id: 'replan', label: 'Replan', icon: 'fa-arrows-rotate', desc: 'Reroute around blockers & delays' },
                     ].map(mode => (
                       <button
                         key={mode.id}
                         type="button"
                         onClick={() => setRequestMode(mode.id)}
-                        className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center space-y-1 transition ${
+                        className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center text-center space-y-1 transition ${
                           requestMode === mode.id 
                             ? 'bg-brand-50 border-brand-500 text-brand-700 font-bold shadow-sm' 
                             : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
@@ -5542,8 +6495,30 @@
                       >
                         <i className={`fa-solid ${mode.icon} text-base`}></i>
                         <span>{mode.label}</span>
+                        <span className={`text-[10px] leading-tight line-clamp-2 ${requestMode === mode.id ? 'text-brand-600' : 'text-slate-400'}`}>
+                          {mode.desc}
+                        </span>
                       </button>
                     ))}
+                  </div>
+
+                  {/* Mode Purpose & Contract Callout */}
+                  <div className="mt-2 p-2.5 bg-slate-50 border border-slate-200/80 rounded-xl text-[11px] text-slate-600 flex items-start space-x-2">
+                    <i className="fa-solid fa-circle-info text-brand-500 mt-0.5 text-xs shrink-0"></i>
+                    <div>
+                      {requestMode === 'create_plan' && (
+                        <span><strong className="text-slate-700">Create Plan:</strong> Deconstructs the focus node into sequential milestones and actions with explicit dependencies. Expected output: rich <code className="bg-slate-200/60 px-1 py-0.5 rounded text-[10px]">create_node</code> and <code className="bg-slate-200/60 px-1 py-0.5 rounded text-[10px]">add_dependency</code> mutations.</span>
+                      )}
+                      {(requestMode === 'action_assistance' || requestMode === 'task_assistance') && (
+                        <span><strong className="text-slate-700">Action Assist:</strong> Provides deep execution guidance, research, and technical advice in <code className="bg-slate-200/60 px-1 py-0.5 rounded text-[10px]">advice</code>. Graph structure is preserved (no node creations or status updates).</span>
+                      )}
+                      {requestMode === 'report_progress' && (
+                        <span><strong className="text-slate-700">Report Progress:</strong> Reconciles your work notes below against in-progress tasks, updating completed tasks to <code className="bg-slate-200/60 px-1 py-0.5 rounded text-[10px]">status: 'done'</code> and attaching outcomes as evidence.</span>
+                      )}
+                      {requestMode === 'replan' && (
+                        <span><strong className="text-slate-700">Replan:</strong> Detaches stalled dependencies and constructs alternate pathways for blocked tasks. Completed work is strictly preserved.</span>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -5889,6 +6864,7 @@
     function AgentSetupModal({ onClose, showToast }) {
       const [prompt, setPrompt] = useState('');
       const [copied, setCopied] = useState(false);
+      const [activeTab, setActiveTab] = useState('prompt'); // 'prompt' | 'guides' | 'architecture'
 
       useEffect(() => {
         fetch('/api/agent-system-prompt')
@@ -5906,13 +6882,21 @@
 
       return (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 flex flex-col max-h-[85vh]">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 flex flex-col max-h-[90vh]">
+            {/* Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center space-x-2">
-                <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                  <i className="fa-solid fa-robot text-brand-600"></i>
-                  <span>Configure Persistent Custom Agent</span>
-                </h3>
+                <div className="w-9 h-9 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center text-lg">
+                  <i className="fa-solid fa-robot"></i>
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                    <span>Configure Persistent Custom Agent</span>
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Set up ChatGPT, Claude Projects, or Gemini Gems as dedicated planning advisors (ADR 0017)
+                  </p>
+                </div>
                 <ContextHelpButton
                   title="Dual Delivery Architecture"
                   summary="Goal Guru provisions system instructions for persistent custom agents (Custom GPTs, Claude Projects, Gems) so they strictly communicate via Goal Guru JSON proposals."
@@ -5921,31 +6905,207 @@
                   align="left"
                 />
               </div>
-              <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+              <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg transition">
                 <i className="fa-solid fa-xmark text-lg"></i>
               </button>
             </div>
 
-            <div className="mt-4 space-y-3 flex-1 overflow-y-auto custom-scrollbar pr-1">
-              <p className="text-xs text-slate-600">
-                Copy this system prompt and paste it into the <strong>Instructions</strong> box when creating a <strong>Custom GPT (ChatGPT)</strong>, a <strong>Claude Project</strong>, or a <strong>Gemini Gem</strong>. This configures the agent to communicate strictly via Goal Guru JSON proposals.
-              </p>
-              <pre className="bg-slate-900 text-slate-100 p-4 rounded-xl text-xs font-mono overflow-x-auto max-h-72 custom-scrollbar whitespace-pre-wrap">
-                {prompt}
-              </pre>
+            {/* Navigation Tabs */}
+            <div className="flex space-x-2 pt-3 border-b border-slate-100 text-xs font-semibold">
+              <button
+                onClick={() => setActiveTab('prompt')}
+                className={`pb-2.5 px-3 border-b-2 flex items-center space-x-1.5 transition ${
+                  activeTab === 'prompt'
+                    ? 'border-brand-600 text-brand-600 font-bold'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <i className="fa-solid fa-terminal text-xs"></i>
+                <span>Universal System Prompt</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('guides')}
+                className={`pb-2.5 px-3 border-b-2 flex items-center space-x-1.5 transition ${
+                  activeTab === 'guides'
+                    ? 'border-brand-600 text-brand-600 font-bold'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <i className="fa-solid fa-compass text-xs"></i>
+                <span>Platform Setup Guides</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('architecture')}
+                className={`pb-2.5 px-3 border-b-2 flex items-center space-x-1.5 transition ${
+                  activeTab === 'architecture'
+                    ? 'border-brand-600 text-brand-600 font-bold'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <i className="fa-solid fa-diagram-project text-xs"></i>
+                <span>How It Works (ADR 0017)</span>
+              </button>
             </div>
 
-            <div className="flex justify-end space-x-2 pt-4 border-t border-slate-100 mt-4">
-              <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg font-medium">
-                Close
-              </button>
-              <button 
-                onClick={handleCopy}
-                className="px-5 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-medium shadow flex items-center space-x-2"
-              >
-                <i className={`fa-solid ${copied ? 'fa-check' : 'fa-copy'}`}></i>
-                <span>{copied ? 'Copied!' : 'Copy System Instructions'}</span>
-              </button>
+            {/* Tab Content */}
+            <div className="mt-4 flex-1 overflow-y-auto custom-scrollbar pr-1 space-y-4">
+              {activeTab === 'prompt' && (
+                <div className="space-y-3">
+                  <div className="bg-brand-50/60 border border-brand-200/80 rounded-xl p-3 text-xs text-brand-900 flex items-start space-x-2.5">
+                    <i className="fa-solid fa-circle-info text-brand-600 mt-0.5 text-sm shrink-0"></i>
+                    <div>
+                      <p className="font-semibold">One prompt for all LLM platforms</p>
+                      <p className="text-brand-800/90 mt-0.5 text-[11px] leading-relaxed">
+                        Paste this system prompt into your persistent agent. Once configured, you can paste exported Goal Guru context slices into the agent without needing to repeatedly explain the protocol or envelope format.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="relative">
+                    <pre className="bg-slate-900 text-slate-100 p-4 rounded-xl text-xs font-mono overflow-x-auto max-h-80 custom-scrollbar whitespace-pre-wrap leading-relaxed">
+                      {prompt}
+                    </pre>
+                    <button
+                      onClick={handleCopy}
+                      className="absolute top-3 right-3 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition shadow flex items-center space-x-1.5 border border-slate-700"
+                    >
+                      <i className={`fa-solid ${copied ? 'fa-check text-emerald-400' : 'fa-copy'}`}></i>
+                      <span>{copied ? 'Copied!' : 'Copy'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'guides' && (
+                <div className="space-y-4 text-xs">
+                  {/* ChatGPT Custom GPT */}
+                  <div className="border border-slate-200 rounded-xl p-3.5 bg-slate-50/50 space-y-2">
+                    <div className="flex items-center space-x-2 text-slate-900 font-bold">
+                      <span className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px] font-bold">1</span>
+                      <i className="fa-solid fa-comments text-emerald-600"></i>
+                      <span>OpenAI ChatGPT — Custom GPT</span>
+                    </div>
+                    <ol className="list-decimal list-inside space-y-1 text-slate-600 pl-2">
+                      <li>Go to <strong>ChatGPT</strong> ➔ <strong>Explore GPTs</strong> ➔ click <strong>+ Create</strong>.</li>
+                      <li>Select the <strong>Configure</strong> tab.</li>
+                      <li>Name it <code>Goal Guru Advisor</code> and add a description.</li>
+                      <li>Paste the <strong>Universal System Prompt</strong> into the <strong>Instructions</strong> box.</li>
+                      <li>Ensure <strong>Web Browsing</strong> is enabled for external research evidence.</li>
+                      <li>Click <strong>Save / Publish</strong> (Only me).</li>
+                    </ol>
+                  </div>
+
+                  {/* Claude Projects */}
+                  <div className="border border-slate-200 rounded-xl p-3.5 bg-slate-50/50 space-y-2">
+                    <div className="flex items-center space-x-2 text-slate-900 font-bold">
+                      <span className="w-5 h-5 rounded-full bg-amber-600 text-white flex items-center justify-center text-[10px] font-bold">2</span>
+                      <i className="fa-solid fa-brain text-amber-600"></i>
+                      <span>Anthropic Claude — Claude Project</span>
+                    </div>
+                    <ol className="list-decimal list-inside space-y-1 text-slate-600 pl-2">
+                      <li>Go to <strong>Claude</strong> ➔ <strong>Projects</strong> ➔ click <strong>Create Project</strong>.</li>
+                      <li>Name it <code>Goal Guru Planning Partner</code>.</li>
+                      <li>Click <strong>Set Project Instructions</strong> and paste the <strong>Universal System Prompt</strong>.</li>
+                      <li>(Optional) Add project roadmaps or background docs in <strong>Project Knowledge</strong>.</li>
+                      <li>Start chats inside the project whenever decomposing goals or replanning!</li>
+                    </ol>
+                  </div>
+
+                  {/* Google Gemini Gems */}
+                  <div className="border border-slate-200 rounded-xl p-3.5 bg-slate-50/50 space-y-2">
+                    <div className="flex items-center space-x-2 text-slate-900 font-bold">
+                      <span className="w-5 h-5 rounded-full bg-sky-600 text-white flex items-center justify-center text-[10px] font-bold">3</span>
+                      <i className="fa-solid fa-gem text-sky-600"></i>
+                      <span>Google Gemini — Custom Gem</span>
+                    </div>
+                    <ol className="list-decimal list-inside space-y-1 text-slate-600 pl-2">
+                      <li>Go to <strong>Gemini</strong> ➔ open the <strong>Gem Manager</strong>.</li>
+                      <li>Click <strong>New Gem</strong> and name it <code>Goal Guru Planner</code>.</li>
+                      <li>Paste the <strong>Universal System Prompt</strong> into the <strong>Instructions</strong> field.</li>
+                      <li>Save and use the Gem for interactive goal decomposition.</li>
+                    </ol>
+                  </div>
+
+                  {/* Developer MCP Server */}
+                  <div className="border border-slate-200 rounded-xl p-3.5 bg-slate-50/50 space-y-2">
+                    <div className="flex items-center space-x-2 text-slate-900 font-bold">
+                      <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold">4</span>
+                      <i className="fa-solid fa-plug text-indigo-600"></i>
+                      <span>Developer / IDE MCP Server (Cursor, Claude Code, Antigravity)</span>
+                    </div>
+                    <p className="text-slate-600">
+                      Goal Guru also includes a built-in MCP server for runtime development telemetry and error fixes:
+                    </p>
+                    <code className="block bg-slate-900 text-slate-200 p-2.5 rounded-lg font-mono text-[11px]">
+                      node scripts/mcp-dev-server.cjs
+                    </code>
+                    <p className="text-[11px] text-slate-500">
+                      Exposes <code>poll_dev_errors</code>, <code>get_error_details</code>, <code>mark_error_status</code>, and <code>verify_fix</code> tools.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'architecture' && (
+                <div className="space-y-3.5 text-xs text-slate-700">
+                  <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-2">
+                    <h4 className="font-bold text-slate-900 text-sm flex items-center space-x-1.5">
+                      <i className="fa-solid fa-layer-group text-brand-600"></i>
+                      <span>Dual System Prompt Delivery Strategy (ADR 0017)</span>
+                    </h4>
+                    <p className="leading-relaxed text-slate-600">
+                      Goal Guru solves a fundamental friction in LLM planning: <em>How do we give the AI precise instructions without wasting token context on every interaction?</em>
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                      <div className="bg-white p-3 rounded-lg border border-slate-200">
+                        <span className="font-bold text-slate-900 block mb-1">1. Ad-Hoc / Vanilla Chat</span>
+                        <p className="text-[11px] text-slate-500">
+                          Every clipboard export embeds a compact fallback preamble so unconfigured vanilla chats remain 100% compliant and output valid proposals.
+                        </p>
+                      </div>
+                      <div className="bg-white p-3 rounded-lg border border-slate-200">
+                        <span className="font-bold text-slate-900 block mb-1">2. Persistent Custom Agent</span>
+                        <p className="text-[11px] text-slate-500">
+                          Persistent agents (Custom GPT, Claude Project) hold the system prompt permanently, saving context tokens and retaining conversation memory.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-2">
+                    <h4 className="font-bold text-slate-900 text-sm flex items-center space-x-1.5">
+                      <i className="fa-solid fa-arrows-spin text-brand-600"></i>
+                      <span>The Safe Collaboration Lifecycle</span>
+                    </h4>
+                    <ol className="list-decimal list-inside space-y-1.5 text-slate-600">
+                      <li><strong>Authoritative State</strong>: Goal Guru's local SQLite database always owns the truth; external LLMs never write directly to disk.</li>
+                      <li><strong>Selective Review</strong>: Every AI response is imported into Goal Guru as an interactive proposal envelope. You review and select which mutations to accept.</li>
+                      <li><strong>Invariants Enforced</strong>: Goal Guru validates parent-child hierarchies, detects circular dependencies, and provides instant 1-click Undo (Ctrl+Z).</li>
+                    </ol>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between pt-4 border-t border-slate-100 mt-4">
+              <span className="text-xs text-slate-400">
+                Compatible with GPT-4o, Claude 3.5 Sonnet, Gemini 1.5 Pro & local LLMs
+              </span>
+              <div className="flex space-x-2">
+                <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg font-medium transition">
+                  Close
+                </button>
+                <button 
+                  onClick={handleCopy}
+                  className="px-5 py-2 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-medium shadow flex items-center space-x-2 transition"
+                >
+                  <i className={`fa-solid ${copied ? 'fa-check' : 'fa-copy'}`}></i>
+                  <span>{copied ? 'Copied!' : 'Copy System Instructions'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

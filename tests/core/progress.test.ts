@@ -181,4 +181,26 @@ describe('Progress Calculation Engine (src/core/progress.ts)', () => {
     expect(summary.tierRings[0].percentage).toBe(0);
     expect(summary.goalRings).toHaveLength(0);
   });
+
+  it('excludes archived goals and their children from progress calculations', () => {
+    const nodesWithArchived: Node[] = [
+      ...sampleNodes.map((n) =>
+        n.id === 'g2' ? { ...n, archivedAt: '2026-09-20T12:00:00.000Z' } : n
+      ),
+    ];
+
+    const summary = computeWorkspaceProgress(nodesWithArchived);
+
+    // Previously 7 nodes; with g2 archived, active nodes = 6
+    expect(summary.totalNodes).toBe(6);
+    expect(summary.archivedGoalsCount).toBe(1);
+
+    // g2 was done, so completed nodes drops from 3 to 2 (a1, sa1)
+    expect(summary.completedNodes).toBe(2);
+    expect(summary.overallPercentage).toBe(Math.round((2 / 6) * 100)); // 33%
+
+    // Only g1 ring should exist in active goal rings
+    expect(summary.goalRings).toHaveLength(1);
+    expect(summary.goalRings[0].id).toBe('ring_goal_g1');
+  });
 });
