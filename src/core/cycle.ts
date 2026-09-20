@@ -7,8 +7,8 @@ export interface CycleResult {
 
 /**
  * Kahn's algorithm for topological sorting and cycle detection (ADR 0012)
- * In our model: fromNodeId depends on toNodeId (toNodeId must be completed first).
- * Therefore, directed edge for processing order is: toNodeId -> fromNodeId.
+ * In our model: fromNodeId is prerequisite, toNodeId is dependent (toNodeId depends on fromNodeId).
+ * Therefore, directed execution edge is: fromNodeId -> toNodeId.
  */
 export function detectCycle(
   dependencies: Pick<Dependency, 'fromNodeId' | 'toNodeId'>[]
@@ -17,8 +17,8 @@ export function detectCycle(
     return { hasCycle: false, cycleNodes: [] };
   }
 
-  // Build adjacency list (toNode -> array of fromNodes that depend on it)
-  // and calculate in-degree (number of incoming dependencies each fromNode has)
+  // Build adjacency list (fromNode -> array of toNodes that depend on it)
+  // and calculate in-degree (number of incoming prerequisites each toNode has)
   const adjacency = new Map<string, string[]>();
   const inDegree = new Map<string, number>();
   const allNodes = new Set<string>();
@@ -27,14 +27,14 @@ export function detectCycle(
     allNodes.add(dep.fromNodeId);
     allNodes.add(dep.toNodeId);
 
-    if (!adjacency.has(dep.toNodeId)) {
-      adjacency.set(dep.toNodeId, []);
+    if (!adjacency.has(dep.fromNodeId)) {
+      adjacency.set(dep.fromNodeId, []);
     }
-    adjacency.get(dep.toNodeId)!.push(dep.fromNodeId);
+    adjacency.get(dep.fromNodeId)!.push(dep.toNodeId);
 
-    inDegree.set(dep.fromNodeId, (inDegree.get(dep.fromNodeId) || 0) + 1);
-    if (!inDegree.has(dep.toNodeId)) {
-      inDegree.set(dep.toNodeId, 0);
+    inDegree.set(dep.toNodeId, (inDegree.get(dep.toNodeId) || 0) + 1);
+    if (!inDegree.has(dep.fromNodeId)) {
+      inDegree.set(dep.fromNodeId, 0);
     }
   }
 
@@ -87,6 +87,73 @@ export function detectCycle(
   };
 }
 
+/**
+ * Topological Sort (Kahn's Algorithm)
+ * Orders items so that all prerequisites appear before items that depend on them.
+ * Preserves stable ordering for independent nodes.
+ */
+export function topologicalSort<T extends { id: string }>(
+  items: T[],
+  dependencies: Pick<Dependency, 'fromNodeId' | 'toNodeId'>[]
+): T[] {
+  if (items.length <= 1) return [...items];
+
+  const itemMap = new Map<string, T>();
+  items.forEach(item => itemMap.set(item.id, item));
+
+  // Only consider dependencies where both nodes exist in items
+  const relevantDeps = dependencies.filter(
+    d => itemMap.has(d.fromNodeId) && itemMap.has(d.toNodeId)
+  );
+
+  const inDegree = new Map<string, number>();
+  const adjacency = new Map<string, string[]>();
+
+  items.forEach(item => {
+    inDegree.set(item.id, 0);
+    adjacency.set(item.id, []);
+  });
+
+  relevantDeps.forEach(dep => {
+    adjacency.get(dep.fromNodeId)!.push(dep.toNodeId);
+    inDegree.set(dep.toNodeId, (inDegree.get(dep.toNodeId) || 0) + 1);
+  });
+
+  const queue: string[] = [];
+  items.forEach(item => {
+    if ((inDegree.get(item.id) || 0) === 0) {
+      queue.push(item.id);
+    }
+  });
+
+  const sorted: T[] = [];
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    visited.add(currentId);
+    sorted.push(itemMap.get(currentId)!);
+
+    const neighbors = adjacency.get(currentId) || [];
+    for (const neighborId of neighbors) {
+      const remaining = (inDegree.get(neighborId) || 0) - 1;
+      inDegree.set(neighborId, remaining);
+      if (remaining === 0) {
+        queue.push(neighborId);
+      }
+    }
+  }
+
+  // Any remaining nodes (e.g. if cycle exists) are appended at the end
+  items.forEach(item => {
+    if (!visited.has(item.id)) {
+      sorted.push(item);
+    }
+  });
+
+  return sorted;
+}
+
 function canReach(
   start: string,
   target: string,
@@ -103,3 +170,4 @@ function canReach(
   }
   return false;
 }
+

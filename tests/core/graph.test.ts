@@ -43,9 +43,9 @@ describe('Dependency Target Rules (ADR 0001 & ADR 0003)', () => {
 describe('Cycle Detection (ADR 0012)', () => {
   it('detects no cycle in linear or branching DAG', () => {
     const dependencies: Pick<Dependency, 'fromNodeId' | 'toNodeId'>[] = [
-      { fromNodeId: 'act_2', toNodeId: 'act_1' }, // act_2 depends on act_1
-      { fromNodeId: 'act_3', toNodeId: 'act_2' }, // act_3 depends on act_2
-      { fromNodeId: 'act_4', toNodeId: 'act_1' }, // act_4 depends on act_1
+      { fromNodeId: 'act_1', toNodeId: 'act_2' }, // act_1 precedes act_2 (act_2 depends on act_1)
+      { fromNodeId: 'act_2', toNodeId: 'act_3' }, // act_2 precedes act_3 (act_3 depends on act_2)
+      { fromNodeId: 'act_1', toNodeId: 'act_4' }, // act_1 precedes act_4 (act_4 depends on act_1)
     ];
 
     const result = detectCycle(dependencies);
@@ -70,7 +70,7 @@ describe('Cycle Detection (ADR 0012)', () => {
       { fromNodeId: 'act_1', toNodeId: 'act_2' },
       { fromNodeId: 'act_2', toNodeId: 'act_3' },
       { fromNodeId: 'act_3', toNodeId: 'act_1' },
-      { fromNodeId: 'act_4', toNodeId: 'act_3' }, // downstream unaffected
+      { fromNodeId: 'act_3', toNodeId: 'act_4' }, // downstream unaffected
     ];
 
     const result = detectCycle(dependencies);
@@ -98,7 +98,7 @@ describe('Dynamic Readiness Computation (ADR 0003)', () => {
     const dependencies: Dependency[] = [];
 
     const readinessMap = computeReadiness(nodes, dependencies);
-    expect(readinessMap.get('act_1')).toEqual({ readiness: 'ready', blockingNodeIds: [] });
+    expect(readinessMap.get('act_1')).toEqual({ readiness: 'ready', blockingNodeIds: [], blockingNodeTitles: [] });
   });
 
   it('marks node as blocked if dependency is todo or in_progress', () => {
@@ -106,14 +106,14 @@ describe('Dynamic Readiness Computation (ADR 0003)', () => {
       createMockNode('act_1', 'todo'),
       createMockNode('act_2', 'todo'),
     ];
-    // act_2 depends on act_1
+    // act_1 is prerequisite for act_2 (act_2 depends on act_1)
     const dependencies: Dependency[] = [
-      { id: 'dep_1', workspaceId: 'ws_1', fromNodeId: 'act_2', toNodeId: 'act_1', createdAt: '' },
+      { id: 'dep_1', workspaceId: 'ws_1', fromNodeId: 'act_1', toNodeId: 'act_2', createdAt: '' },
     ];
 
     const readinessMap = computeReadiness(nodes, dependencies);
-    expect(readinessMap.get('act_1')).toEqual({ readiness: 'ready', blockingNodeIds: [] });
-    expect(readinessMap.get('act_2')).toEqual({ readiness: 'blocked', blockingNodeIds: ['act_1'] });
+    expect(readinessMap.get('act_1')).toEqual({ readiness: 'ready', blockingNodeIds: [], blockingNodeTitles: [] });
+    expect(readinessMap.get('act_2')).toEqual({ readiness: 'blocked', blockingNodeIds: ['act_1'], blockingNodeTitles: ['Node act_1'] });
   });
 
   it('marks node as ready once all dependencies are done', () => {
@@ -122,11 +122,11 @@ describe('Dynamic Readiness Computation (ADR 0003)', () => {
       createMockNode('act_2', 'todo'),
     ];
     const dependencies: Dependency[] = [
-      { id: 'dep_1', workspaceId: 'ws_1', fromNodeId: 'act_2', toNodeId: 'act_1', createdAt: '' },
+      { id: 'dep_1', workspaceId: 'ws_1', fromNodeId: 'act_1', toNodeId: 'act_2', createdAt: '' },
     ];
 
     const readinessMap = computeReadiness(nodes, dependencies);
-    expect(readinessMap.get('act_2')).toEqual({ readiness: 'ready', blockingNodeIds: [] });
+    expect(readinessMap.get('act_2')).toEqual({ readiness: 'ready', blockingNodeIds: [], blockingNodeTitles: [] });
   });
 
   it('marks node as blocked if at least one dependency is not done', () => {
@@ -137,11 +137,11 @@ describe('Dynamic Readiness Computation (ADR 0003)', () => {
     ];
     // act_3 depends on both act_1 and act_2
     const dependencies: Dependency[] = [
-      { id: 'dep_1', workspaceId: 'ws_1', fromNodeId: 'act_3', toNodeId: 'act_1', createdAt: '' },
-      { id: 'dep_2', workspaceId: 'ws_1', fromNodeId: 'act_3', toNodeId: 'act_2', createdAt: '' },
+      { id: 'dep_1', workspaceId: 'ws_1', fromNodeId: 'act_1', toNodeId: 'act_3', createdAt: '' },
+      { id: 'dep_2', workspaceId: 'ws_1', fromNodeId: 'act_2', toNodeId: 'act_3', createdAt: '' },
     ];
 
     const readinessMap = computeReadiness(nodes, dependencies);
-    expect(readinessMap.get('act_3')).toEqual({ readiness: 'blocked', blockingNodeIds: ['act_2'] });
+    expect(readinessMap.get('act_3')).toEqual({ readiness: 'blocked', blockingNodeIds: ['act_2'], blockingNodeTitles: ['Node act_2'] });
   });
 });

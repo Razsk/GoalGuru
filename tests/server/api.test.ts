@@ -102,8 +102,8 @@ Here is your breakdown:
     },
     {
       "type": "add_dependency",
-      "fromNodeId": "temp:act-2",
-      "toNodeId": "temp:act-1"
+      "fromNodeId": "temp:act-1",
+      "toNodeId": "temp:act-2"
     }
   ]
 }

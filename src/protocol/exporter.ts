@@ -55,13 +55,18 @@ export function extractCausalSubgraph(
   }
   collectDescendants(focusNodeId);
 
-  // 3. Direct dependencies (toNodeId where fromNodeId is in focus or descendants)
+  // 3. Direct dependencies (both upstream prerequisites and downstream dependents)
   const coreIds = new Set<string>([focusNodeId, ...descendantIds]);
   const dependencyTargetIds = new Set<string>();
   for (const dep of allDeps) {
     if (coreIds.has(dep.fromNodeId)) {
       if (!coreIds.has(dep.toNodeId) && !ancestorIds.has(dep.toNodeId)) {
         dependencyTargetIds.add(dep.toNodeId);
+      }
+    }
+    if (coreIds.has(dep.toNodeId)) {
+      if (!coreIds.has(dep.fromNodeId) && !ancestorIds.has(dep.fromNodeId)) {
+        dependencyTargetIds.add(dep.fromNodeId);
       }
     }
   }
