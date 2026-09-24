@@ -6357,7 +6357,8 @@
     // Node Item Recursive Component
     function NodeItem({ node, allNodes = [], readinessMap, onExport, onToggleStatus, onDelete, onAddEvidence, onArchive, onUnarchive, onRefreshGraph, onAddChild, showToast }) {
       const [collapsed, setCollapsed] = useState(false);
-      const [showEvidence, setShowEvidence] = useState(true);
+      const [showEvidence, setShowEvidence] = useState(false);
+      const [isExpanded, setIsExpanded] = useState(false);
       const readinessInfo = readinessMap?.[node.id];
       const isBlocked = readinessInfo?.readiness === 'blocked';
       const evidenceList = node.evidence || [];
@@ -6416,26 +6417,45 @@
       };
 
       return (
-        <div className={`border rounded-xl p-3 transition ${
-          isMilestone 
-            ? 'border-purple-300 bg-purple-50/25 hover:border-purple-400 shadow-2xs ring-1 ring-purple-200/50' 
-            : node.type === 'goal'
-            ? 'border-indigo-200 bg-slate-50/70 hover:border-indigo-300 shadow-2xs'
-            : 'border-slate-200 bg-slate-50/50 hover:border-slate-300'
-        }`}>
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center space-x-2.5 flex-1 min-w-0">
+        <div 
+          onClick={(e) => {
+            if (e.target.closest('button, a, input, select, textarea, [role="button"], .no-card-click')) return;
+            const selection = window.getSelection();
+            if (selection && selection.toString().trim().length > 0) return;
+            e.stopPropagation();
+            setIsExpanded(prev => !prev);
+          }}
+          title={isExpanded ? "Click card to compact" : "Click card to expand text"}
+          className={`border rounded-xl p-3 transition cursor-pointer select-text ${
+            isMilestone 
+              ? 'border-purple-300 bg-purple-50/25 hover:border-purple-400 shadow-2xs ring-1 ring-purple-200/50' 
+              : node.type === 'goal'
+              ? 'border-indigo-200 bg-slate-50/70 hover:border-indigo-300 shadow-2xs'
+              : 'border-slate-200 bg-slate-50/50 hover:border-slate-300'
+          }`}
+        >
+          <div className={`flex ${isExpanded ? 'items-start' : 'items-center'} justify-between gap-3`}>
+            <div className={`flex ${isExpanded ? 'items-start' : 'items-center'} space-x-2.5 flex-1 min-w-0`}>
               {node.children.length > 0 ? (
-                <button onClick={() => setCollapsed(!collapsed)} className="text-slate-400 hover:text-slate-600 w-5 text-center shrink-0">
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCollapsed(!collapsed);
+                  }} 
+                  className={`text-slate-400 hover:text-slate-600 w-5 text-center shrink-0 ${isExpanded ? 'mt-0.5' : ''}`}
+                >
                   <i className={`fa-solid fa-chevron-${collapsed ? 'right' : 'down'} text-xs`}></i>
                 </button>
               ) : (
-                <span className="w-5 text-slate-300 text-center shrink-0">•</span>
+                <span className={`w-5 text-slate-300 text-center shrink-0 ${isExpanded ? 'mt-0.5' : ''}`}>•</span>
               )}
 
               {/* Status toggle button */}
               <button 
-                onClick={() => onToggleStatus(node)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleStatus(node);
+                }}
                 title="Click to advance status"
                 className={`px-2 py-0.5 rounded text-xs font-semibold border transition shrink-0 whitespace-nowrap ${statusStyles[node.status]}`}
               >
@@ -6471,7 +6491,7 @@
                   )}
                   <span 
                     title={node.title}
-                    className={`font-semibold text-sm truncate ${node.status === 'done' ? 'line-through text-slate-400' : isMilestone ? 'text-purple-950 font-bold' : 'text-slate-900'}`}
+                    className={`font-semibold text-sm ${isExpanded ? 'break-words whitespace-normal' : 'truncate'} ${node.status === 'done' ? 'line-through text-slate-400' : isMilestone ? 'text-purple-950 font-bold' : 'text-slate-900'}`}
                   >
                     {node.title}
                   </span>
@@ -6479,7 +6499,7 @@
                 {node.description && (
                   <p 
                     title={node.description}
-                    className="text-xs text-slate-500 font-normal truncate mt-0.5 leading-snug"
+                    className={`text-xs font-normal ${isExpanded ? 'text-slate-600 whitespace-pre-wrap break-words mt-1.5 leading-relaxed' : 'text-slate-500 truncate mt-0.5 leading-snug'}`}
                   >
                     {node.description}
                   </p>
@@ -6488,12 +6508,12 @@
 
               {/* Subtree Progress: Mini Ring for Goal Nodes, Linear Pill for other container nodes */}
               {nodeProgress && node.type === 'goal' ? (
-                <div className="hidden sm:inline-flex items-center shrink-0">
+                <div className={`hidden sm:inline-flex items-center shrink-0 ${isExpanded ? 'mt-0.5' : ''}`}>
                   <MiniProgressRing percentage={nodeProgress.percentage} />
                 </div>
               ) : nodeProgress ? (
                 <div 
-                  className="hidden sm:flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-[11px] font-semibold text-slate-700 shrink-0"
+                  className={`hidden sm:flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-[11px] font-semibold text-slate-700 shrink-0 ${isExpanded ? 'mt-0.5' : ''}`}
                   title={`${nodeProgress.completed} of ${nodeProgress.total} items completed in subtree`}
                 >
                   <div className="w-8 h-1.5 bg-slate-200 rounded-full overflow-hidden">
@@ -6510,7 +6530,7 @@
 
               {/* Dynamic Readiness Badge (ADR 0003) */}
               {isBlocked && (
-                <div className="flex items-center space-x-1 shrink-0">
+                <div className={`flex items-center space-x-1 shrink-0 ${isExpanded ? 'mt-0.5' : ''}`}>
                   <span 
                     className="px-2 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded text-xs font-medium flex items-center space-x-1 cursor-help whitespace-nowrap" 
                     title={blockerTitles.length > 0 ? `Blocked by: ${blockerTitles.join(', ')}` : 'Blocked by prerequisites'}
@@ -6531,9 +6551,16 @@
               {evidenceCount > 0 && (
                 <button
                   type="button"
-                  onClick={() => setShowEvidence(!showEvidence)}
-                  title={`${showEvidence ? 'Hide' : 'Show'} ${evidenceCount} attached notes/evidence`}
-                  className="px-2 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 flex items-center space-x-1 transition shrink-0 whitespace-nowrap"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowEvidence(!showEvidence);
+                  }}
+                  title={`${showEvidence ? 'Collapse' : 'Open'} notes (${evidenceCount})`}
+                  className={`px-2 py-0.5 rounded text-xs font-semibold border transition shrink-0 whitespace-nowrap flex items-center space-x-1 ${
+                    showEvidence 
+                      ? 'bg-amber-100 text-amber-900 border-amber-400 ring-1 ring-amber-300' 
+                      : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                  } ${isExpanded ? 'mt-0.5' : ''}`}
                 >
                   <i className="fa-regular fa-note-sticky text-[10px]"></i>
                   <span>{evidenceCount}</span>
@@ -6542,7 +6569,10 @@
             </div>
 
             {/* Actions */}
-            <div className="flex items-center space-x-1 shrink-0">
+            <div 
+              onClick={(e) => e.stopPropagation()} 
+              className={`flex items-center space-x-1 shrink-0 ${isExpanded ? 'mt-0.5' : ''}`}
+            >
               {/* Quick 1-Click Child Authoring (ADR 0001, ADR 0004) */}
               {(node.type === 'goal' || node.type === 'sub_goal') && (
                 <>
@@ -6641,7 +6671,10 @@
 
           {/* Attached Evidence & Notes list */}
           {showEvidence && evidenceCount > 0 && (
-            <div className="mt-2.5 pt-2.5 border-t border-slate-200/60 pl-6 space-y-2">
+            <div 
+              onClick={(e) => e.stopPropagation()} 
+              className="mt-2.5 pt-2.5 border-t border-slate-200/60 pl-6 space-y-2 cursor-default"
+            >
               <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
                 <span className="flex items-center space-x-1">
                   <i className="fa-regular fa-note-sticky text-amber-600"></i>
@@ -6705,7 +6738,10 @@
 
           {/* Children */}
           {!collapsed && node.children.length > 0 && (
-            <div className="pl-6 pt-3 space-y-2 border-l-2 border-slate-200 ml-3.5 mt-2">
+            <div 
+              onClick={(e) => e.stopPropagation()} 
+              className="pl-6 pt-3 space-y-2 border-l-2 border-slate-200 ml-3.5 mt-2 cursor-default"
+            >
               {node.children.map(child => (
                 <NodeItem 
                   key={child.id} 
