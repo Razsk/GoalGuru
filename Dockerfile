@@ -36,4 +36,4 @@ USER goalguru
 
 EXPOSE 3000
 
-CMD ["node", "dist/src/server/server.js"]
+CMD ["node", "dist/server/server.js"]

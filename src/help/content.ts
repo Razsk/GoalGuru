@@ -356,9 +356,27 @@ Nodes are dynamically evaluated on every graph update. You never have to manuall
 
 To guarantee graph integrity, Goal Guru strictly prevents circular references ([cycles](term:cycle)). When a proposed change introduces an invalid circular path (e.g. A → B → C → A), topological prevalidation rejects the dependency and highlights the offending nodes.`,
       },
+      {
+        title: 'How Task Priorities and Order Are Determined',
+        content: `Goal Guru determines the priority and sequential order of tasks through a deterministic causality engine rather than subjective urgency tags:
+
+1. **Topological Precedence (Causal Constraints)**: Tasks are modeled as a Directed Acyclic Graph (DAG) with [dependency](term:dependency) relationships. If an [action](term:action) depends on a prerequisite, Kahn's topological sort orders the prerequisite first. A task cannot be scheduled ahead of its unmet prerequisites.
+2. **Dynamic Readiness Hierarchy**: Every active node is continuously evaluated into execution priority tiers:
+   * **In Progress** (Active Execution Focus): Tasks the user has already initiated and is actively working on. These hold top operational priority.
+   * **Ready to Start** (Initiable Priority): All inbound prerequisite dependencies are *done*. These tasks have zero blockers and can be initiated immediately.
+   * **Blocked** (Subsequent Horizon): One or more prerequisites remain incomplete. These tasks are deferred until upstream work finishes.
+   * **Done**: Completed tasks removed from execution queues.
+3. **Top Initiable Actions per Goal**: For each [goal](term:goal), the system identifies the top three unblocked actions you can initiate right now. This highlights immediate next steps without overwhelming you with the full tree. [In progress](term:status) actions appear first, followed by [ready](term:readiness) actions ordered by topological priority.
+4. **Bottleneck & Critical Path Unblocking**: Completing an action that serves as a prerequisite for multiple downstream tasks or [milestones](term:milestone) accelerates overall project velocity by unblocking dependent work.`,
+        tips: [
+          'Open the Top Actions view to see the top three immediately initiable actions for each goal in draggable, rearrangeable cards.',
+          'Focus on In Progress actions before initiating new Ready actions to minimize multitasking friction.',
+          'Dismiss completed or secondary goals from the Top Actions board to maintain sharp focus on your primary objectives.',
+        ],
+      },
     ],
     relatedTopicIds: ['goals-and-actions', 'progress-analytics', 'safety-undo'],
-    relatedTermIds: ['dependency', 'readiness', 'status', 'cycle'],
+    relatedTermIds: ['dependency', 'readiness', 'status', 'cycle', 'action', 'goal'],
   },
 
   {

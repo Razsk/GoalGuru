@@ -81,10 +81,21 @@
       .print-border {
         border-color: #94a3b8 !important;
       }
+      .print-only {
+        display: block !important;
+      }
+      .print-card-grid {
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 12px !important;
+      }
       @page {
         margin: 1cm;
         size: auto;
       }
+    }
+    .print-only {
+      display: none;
     }
   </style>
 </head>
@@ -4507,6 +4518,888 @@
       );
     }
 
+    // Helper to find parent/ancestor milestone for an action
+    function findNodeMilestone(nodeId, allNodes) {
+      if (!nodeId || !allNodes) return null;
+      const nodeMap = new Map(allNodes.map(n => [n.id, n]));
+      let curr = nodeMap.get(nodeId);
+      while (curr && curr.parentId) {
+        curr = nodeMap.get(curr.parentId);
+        if (curr && curr.type === 'milestone') return curr;
+      }
+      return null;
+    }
+
+    // --- Top Initiable Actions by Goal View ---
+    function TopActionsView({ graphData, workspaceName, workspaceId, onToggleStatus, onExport, onAddEvidence, onSwitchView, showToast }) {
+      const helpCtx = React.useContext(HelpContext);
+
+      const [dismissedGoalIds, setDismissedGoalIds] = useState(() => {
+        try {
+          const raw = localStorage.getItem('goalguru_top_actions_dismissed_' + (workspaceId || 'default'));
+          return raw ? new Set(JSON.parse(raw)) : new Set();
+        } catch {
+          return new Set();
+        }
+      });
+
+      const [orderedGoalIds, setOrderedGoalIds] = useState(() => {
+        try {
+          const raw = localStorage.getItem('goalguru_top_actions_order_' + (workspaceId || 'default'));
+          return raw ? JSON.parse(raw) : [];
+        } catch {
+          return [];
+        }
+      });
+
+      const [draggedGoalId, setDraggedGoalId] = useState(null);
+      const [dragOverGoalId, setDragOverGoalId] = useState(null);
+      const [filterMode, setFilterMode] = useState('all'); // 'all' | 'with_actions' | 'in_progress'
+
+      // Keep localStorage in sync when workspaceId changes
+      useEffect(() => {
+        try {
+          const rawDismissed = localStorage.getItem('goalguru_top_actions_dismissed_' + (workspaceId || 'default'));
+          setDismissedGoalIds(rawDismissed ? new Set(JSON.parse(rawDismissed)) : new Set());
+          const rawOrder = localStorage.getItem('goalguru_top_actions_order_' + (workspaceId || 'default'));
+          setOrderedGoalIds(rawOrder ? JSON.parse(rawOrder) : []);
+        } catch {}
+      }, [workspaceId]);
+
+      const nodes = useMemo(() => (graphData.nodes || []).filter(n => !n.archivedAt), [graphData.nodes]);
+      const activeNodeIds = useMemo(() => new Set(nodes.map(n => n.id)), [nodes]);
+      const dependencies = useMemo(() => (graphData.dependencies || []).filter(d => activeNodeIds.has(d.fromNodeId) && activeNodeIds.has(d.toNodeId)), [graphData.dependencies, activeNodeIds]);
+      const readinessMap = graphData.readiness || {};
+
+      // All active root goals
+      const activeGoals = useMemo(() => {
+        return nodes.filter(n => n.type === 'goal');
+      }, [nodes]);
+
+      // Palette map
+      const goalColorMap = useMemo(() => {
+        const m = new Map();
+        activeGoals.forEach((g, idx) => {
+          m.set(g.id, GOAL_COLOR_PALETTES[idx % GOAL_COLOR_PALETTES.length]);
+        });
+        return m;
+      }, [activeGoals]);
+
+      // Ordered list of all active goals
+      const allOrderedGoals = useMemo(() => {
+        const goalMap = new Map(activeGoals.map(g => [g.id, g]));
+        const result = [];
+        const seen = new Set();
+
+        // 1. Follow stored custom order
+        for (const gId of orderedGoalIds) {
+          if (goalMap.has(gId)) {
+            result.push(goalMap.get(gId));
+            seen.add(gId);
+          }
+        }
+        // 2. Append any goals not yet in stored order
+        for (const g of activeGoals) {
+          if (!seen.has(g.id)) {
+            result.push(g);
+          }
+        }
+        return result;
+      }, [activeGoals, orderedGoalIds]);
+
+      // Update stored order if new goals appeared
+      useEffect(() => {
+        const currentIds = allOrderedGoals.map(g => g.id);
+        if (JSON.stringify(currentIds) !== JSON.stringify(orderedGoalIds)) {
+          setOrderedGoalIds(currentIds);
+          try {
+            localStorage.setItem('goalguru_top_actions_order_' + (workspaceId || 'default'), JSON.stringify(currentIds));
+          } catch {}
+        }
+      }, [allOrderedGoals, workspaceId]);
+
+      // Dismiss / Restore handlers
+      const handleDismissGoal = (goalId) => {
+        const next = new Set(dismissedGoalIds);
+        next.add(goalId);
+        setDismissedGoalIds(next);
+        try {
+          localStorage.setItem('goalguru_top_actions_dismissed_' + (workspaceId || 'default'), JSON.stringify([...next]));
+        } catch {}
+        const goal = activeGoals.find(g => g.id === goalId);
+        if (showToast) showToast(`Dismissed "${goal?.title || 'Goal'}" from overview board`, 'info');
+      };
+
+      const handleRestoreGoal = (goalId) => {
+        const next = new Set(dismissedGoalIds);
+        next.delete(goalId);
+        setDismissedGoalIds(next);
+        try {
+          localStorage.setItem('goalguru_top_actions_dismissed_' + (workspaceId || 'default'), JSON.stringify([...next]));
+        } catch {}
+        const goal = activeGoals.find(g => g.id === goalId);
+        if (showToast) showToast(`Restored "${goal?.title || 'Goal'}" to board`, 'success');
+      };
+
+      const handleRestoreAll = () => {
+        setDismissedGoalIds(new Set());
+        try {
+          localStorage.removeItem('goalguru_top_actions_dismissed_' + (workspaceId || 'default'));
+        } catch {}
+        if (showToast) showToast('Restored all dismissed goals to board', 'success');
+      };
+
+      const handleResetOrder = () => {
+        const defaultOrder = activeGoals.map(g => g.id);
+        setOrderedGoalIds(defaultOrder);
+        try {
+          localStorage.removeItem('goalguru_top_actions_order_' + (workspaceId || 'default'));
+        } catch {}
+        if (showToast) showToast('Card order reset to default', 'info');
+      };
+
+      const handleDismissAllCompleted = () => {
+        const next = new Set(dismissedGoalIds);
+        let count = 0;
+        for (const goal of activeGoals) {
+          const descendants = getDescendantNodes(goal.id, nodes);
+          const actions = descendants.filter(n => n.type === 'action' || n.type === 'sub_action');
+          const isComplete = (goal.status === 'done') || (actions.length > 0 && actions.every(a => a.status === 'done'));
+          if (isComplete && !next.has(goal.id)) {
+            next.add(goal.id);
+            count++;
+          }
+        }
+        if (count > 0) {
+          setDismissedGoalIds(next);
+          try {
+            localStorage.setItem('goalguru_top_actions_dismissed_' + (workspaceId || 'default'), JSON.stringify([...next]));
+          } catch {}
+          if (showToast) showToast(`Dismissed ${count} completed goal${count === 1 ? '' : 's'}`, 'info');
+        } else {
+          if (showToast) showToast('No completed goals to dismiss', 'info');
+        }
+      };
+
+      // Move card earlier/later
+      const handleMoveGoal = (goalId, direction) => {
+        const visibleGoals = allOrderedGoals.filter(g => !dismissedGoalIds.has(g.id));
+        const index = visibleGoals.findIndex(g => g.id === goalId);
+        if (index < 0) return;
+        const targetIndex = index + direction;
+        if (targetIndex < 0 || targetIndex >= visibleGoals.length) return;
+
+        const fromGlobal = orderedGoalIds.indexOf(goalId);
+        const toGlobal = orderedGoalIds.indexOf(visibleGoals[targetIndex].id);
+        if (fromGlobal < 0 || toGlobal < 0) return;
+
+        const newOrder = [...orderedGoalIds];
+        const [moved] = newOrder.splice(fromGlobal, 1);
+        newOrder.splice(toGlobal, 0, moved);
+
+        setOrderedGoalIds(newOrder);
+        try {
+          localStorage.setItem('goalguru_top_actions_order_' + (workspaceId || 'default'), JSON.stringify(newOrder));
+        } catch {}
+      };
+
+      // Drag and Drop handlers
+      const handleDragStart = (e, goalId) => {
+        e.dataTransfer.setData('text/plain', goalId);
+        e.dataTransfer.effectAllowed = 'move';
+        setDraggedGoalId(goalId);
+      };
+
+      const handleDragOver = (e, targetGoalId) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (dragOverGoalId !== targetGoalId) {
+          setDragOverGoalId(targetGoalId);
+        }
+      };
+
+      const handleDragLeave = (e, targetGoalId) => {
+        if (dragOverGoalId === targetGoalId) {
+          setDragOverGoalId(null);
+        }
+      };
+
+      const handleDrop = (e, targetGoalId) => {
+        e.preventDefault();
+        const sourceId = e.dataTransfer.getData('text/plain') || draggedGoalId;
+        setDraggedGoalId(null);
+        setDragOverGoalId(null);
+
+        if (!sourceId || sourceId === targetGoalId) return;
+
+        const fromIdx = orderedGoalIds.indexOf(sourceId);
+        const toIdx = orderedGoalIds.indexOf(targetGoalId);
+        if (fromIdx < 0 || toIdx < 0) return;
+
+        const newOrder = [...orderedGoalIds];
+        const [moved] = newOrder.splice(fromIdx, 1);
+        newOrder.splice(toIdx, 0, moved);
+
+        setOrderedGoalIds(newOrder);
+        try {
+          localStorage.setItem('goalguru_top_actions_order_' + (workspaceId || 'default'), JSON.stringify(newOrder));
+        } catch {}
+        if (showToast) showToast('Reorganized goal cards order', 'success');
+      };
+
+      const handleDragEnd = () => {
+        setDraggedGoalId(null);
+        setDragOverGoalId(null);
+      };
+
+      // Visible vs Dismissed goals
+      const visibleGoals = useMemo(() => {
+        return allOrderedGoals.filter(g => !dismissedGoalIds.has(g.id));
+      }, [allOrderedGoals, dismissedGoalIds]);
+
+      const dismissedGoals = useMemo(() => {
+        return allOrderedGoals.filter(g => dismissedGoalIds.has(g.id));
+      }, [allOrderedGoals, dismissedGoalIds]);
+
+      // Goal data computation
+      const goalDataMap = useMemo(() => {
+        const map = new Map();
+        for (const goal of activeGoals) {
+          const descendants = getDescendantNodes(goal.id, nodes);
+          const actions = descendants.filter(n => n.type === 'action' || n.type === 'sub_action');
+          const totalActions = actions.length;
+          const completedActions = actions.filter(a => a.status === 'done').length;
+          const progressPercent = totalActions > 0 ? Math.round((completedActions / totalActions) * 100) : (goal.status === 'done' ? 100 : 0);
+
+          const uncompleted = actions.filter(a => a.status !== 'done' && a.status !== 'abandoned');
+          const sortedUncompleted = computeTopologicalOrder(uncompleted, dependencies);
+
+          const inProgress = sortedUncompleted.filter(a => a.status === 'in_progress');
+          const ready = sortedUncompleted.filter(a => a.status === 'todo' && readinessMap[a.id]?.readiness !== 'blocked');
+          const blocked = sortedUncompleted.filter(a => a.status === 'todo' && readinessMap[a.id]?.readiness === 'blocked');
+
+          // Initiable actions: in_progress (actively underway) first, then ready (unblocked)
+          const initiable = [...inProgress, ...ready];
+          const topThree = initiable.slice(0, 3);
+
+          map.set(goal.id, {
+            totalActions,
+            completedActions,
+            progressPercent,
+            inProgressCount: inProgress.length,
+            readyCount: ready.length,
+            blockedCount: blocked.length,
+            initiableActions: topThree,
+            hasInitiable: topThree.length > 0,
+            isComplete: goal.status === 'done' || (totalActions > 0 && completedActions === totalActions),
+          });
+        }
+        return map;
+      }, [activeGoals, nodes, dependencies, readinessMap]);
+
+      // Filtered visible goals
+      const displayedGoals = useMemo(() => {
+        return visibleGoals.filter(g => {
+          const data = goalDataMap.get(g.id);
+          if (!data) return true;
+          if (filterMode === 'with_actions' && !data.hasInitiable) return false;
+          if (filterMode === 'in_progress' && data.inProgressCount === 0) return false;
+          return true;
+        });
+      }, [visibleGoals, goalDataMap, filterMode]);
+
+      // Summary stats
+      const overallStats = useMemo(() => {
+        let totalInitiable = 0;
+        let totalInProgress = 0;
+        let totalReady = 0;
+        let totalBlocked = 0;
+        let totalActionsCount = 0;
+        let totalCompletedCount = 0;
+
+        for (const goal of visibleGoals) {
+          const d = goalDataMap.get(goal.id);
+          if (d) {
+            totalInitiable += d.initiableActions.length;
+            totalInProgress += d.inProgressCount;
+            totalReady += d.readyCount;
+            totalBlocked += d.blockedCount;
+            totalActionsCount += d.totalActions;
+            totalCompletedCount += d.completedActions;
+          }
+        }
+
+        return {
+          totalInitiable,
+          totalInProgress,
+          totalReady,
+          totalBlocked,
+          totalActionsCount,
+          totalCompletedCount,
+          percent: totalActionsCount > 0 ? Math.round((totalCompletedCount / totalActionsCount) * 100) : 0,
+        };
+      }, [visibleGoals, goalDataMap]);
+
+      const printDateStr = new Date().toLocaleDateString(undefined, {
+        weekday: 'short',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+
+      return (
+        <div className="space-y-6">
+          {/* Top Control Bar (Screen only, strictly hidden in print via no-print) */}
+          <div className="no-print bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => onSwitchView('tree')}
+                className="px-3 py-1.5 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 font-semibold flex items-center space-x-1.5 transition"
+                title="Return to full plan tree"
+              >
+                <i className="fa-solid fa-arrow-left"></i>
+                <span>Plan Tree</span>
+              </button>
+
+              {/* Filter mode switcher */}
+              <div className="inline-flex bg-slate-100 p-0.5 rounded-xl font-bold">
+                <button
+                  onClick={() => setFilterMode('all')}
+                  className={'px-2.5 py-1 rounded-lg transition ' + (filterMode === 'all' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-900')}
+                >
+                  All ({visibleGoals.length})
+                </button>
+                <button
+                  onClick={() => setFilterMode('with_actions')}
+                  className={'px-2.5 py-1 rounded-lg transition ' + (filterMode === 'with_actions' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-900')}
+                  title="Only show goals with immediately initiable actions"
+                >
+                  Initiable Actions
+                </button>
+                <button
+                  onClick={() => setFilterMode('in_progress')}
+                  className={'px-2.5 py-1 rounded-lg transition ' + (filterMode === 'in_progress' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-900')}
+                  title="Only show goals with work currently in progress"
+                >
+                  In Progress
+                </button>
+              </div>
+
+              {/* Dismiss completed goals */}
+              <button
+                onClick={handleDismissAllCompleted}
+                className="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl font-semibold text-slate-700 flex items-center space-x-1.5 transition"
+                title="Hide all goals whose actions are already 100% completed"
+              >
+                <i className="fa-solid fa-check-double text-emerald-600 text-[11px]"></i>
+                <span>Dismiss Completed</span>
+              </button>
+
+              {/* Reset order */}
+              <button
+                onClick={handleResetOrder}
+                className="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl font-semibold text-slate-600 flex items-center space-x-1.5 transition"
+                title="Reset card sequence to default order"
+              >
+                <i className="fa-solid fa-arrow-rotate-left text-[10px]"></i>
+                <span>Reset Order</span>
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 self-end md:self-auto">
+              <button
+                onClick={() => helpCtx.openTopic('dependencies-readiness')}
+                className="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl font-semibold flex items-center space-x-1.5 transition"
+                title="Learn how task priorities and order are determined"
+              >
+                <i className="fa-solid fa-circle-question text-brand-500 text-xs"></i>
+                <span>How Priorities Work</span>
+              </button>
+
+              <button
+                onClick={() => window.print()}
+                className="px-4 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold flex items-center space-x-1.5 shadow-sm transition"
+                title="Print this overview or save as PDF (Ctrl+P)"
+              >
+                <i className="fa-solid fa-print text-xs"></i>
+                <span>Print Overview</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Clean Printable Container */}
+          <div className="print-container bg-transparent space-y-5">
+            {/* Printable Document Header (Formatted cleanly for paper and screen) */}
+            <div className="pb-3 border-b-2 border-slate-900 flex flex-col sm:flex-row sm:items-baseline justify-between gap-2">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight leading-tight">
+                    {workspaceName} — Top Initiable Actions Overview
+                  </h1>
+                </div>
+                <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5">
+                  Top three immediate unblocked actions per active goal • {printDateStr} • Authoritative Local State
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-bold bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-300">
+                  {overallStats.percent}% Workspace Done
+                </span>
+                <span className="text-[11px] text-slate-600 font-medium bg-slate-50 px-2 py-1 rounded-lg border border-slate-200">
+                  <strong className="text-amber-700">{overallStats.totalInProgress}</strong> in progress • 
+                  <strong className="text-emerald-700 ml-1">{overallStats.totalReady}</strong> ready to initiate
+                  {overallStats.totalBlocked > 0 && (
+                    <span className="text-slate-500 ml-1">({overallStats.totalBlocked} waiting)</span>
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {/* Rearrangeable Cards Grid */}
+            {displayedGoals.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-12 text-center no-print">
+                <div className="w-16 h-16 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center text-2xl mx-auto mb-4">
+                  <i className="fa-solid fa-bullseye"></i>
+                </div>
+                <h4 className="text-base font-bold text-slate-800">No active goal cards to display</h4>
+                <p className="text-slate-500 text-xs max-w-md mx-auto mt-1 mb-6 leading-relaxed">
+                  {dismissedGoals.length > 0 
+                    ? `You have dismissed ${dismissedGoals.length} goal${dismissedGoals.length === 1 ? '' : 's'}. Click 'Restore' in the dismissed list below to display them.` 
+                    : 'Create goals and actionable execution tasks in your workspace to populate the focus overview.'}
+                </p>
+                {dismissedGoals.length > 0 ? (
+                  <button
+                    onClick={handleRestoreAll}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-semibold text-xs inline-flex items-center space-x-1.5 shadow"
+                  >
+                    <i className="fa-solid fa-arrows-rotate text-xs"></i>
+                    <span>Restore All Dismissed Goals</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => onSwitchView('tree')}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-semibold text-xs inline-flex items-center space-x-1.5 shadow"
+                  >
+                    <i className="fa-solid fa-plus text-xs"></i>
+                    <span>Go to Plan Tree</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 print:grid-cols-2 gap-4 print:gap-3.5 print-card-grid">
+                {displayedGoals.map((goal, idx) => {
+                  const palette = goalColorMap.get(goal.id) || GOAL_COLOR_PALETTES[0];
+                  const data = goalDataMap.get(goal.id) || {
+                    totalActions: 0,
+                    completedActions: 0,
+                    progressPercent: 0,
+                    inProgressCount: 0,
+                    readyCount: 0,
+                    blockedCount: 0,
+                    initiableActions: [],
+                    hasInitiable: false,
+                    isComplete: false,
+                  };
+
+                  const isDragging = draggedGoalId === goal.id;
+                  const isDragOver = dragOverGoalId === goal.id;
+
+                  return (
+                    <div
+                      key={goal.id}
+                      draggable={true}
+                      onDragStart={(e) => handleDragStart(e, goal.id)}
+                      onDragOver={(e) => handleDragOver(e, goal.id)}
+                      onDragLeave={(e) => handleDragLeave(e, goal.id)}
+                      onDrop={(e) => handleDrop(e, goal.id)}
+                      onDragEnd={handleDragEnd}
+                      className={`print-break-avoid bg-white rounded-2xl border transition-all duration-150 flex flex-col justify-between shadow-xs print:shadow-none print:border-slate-400 ${
+                        isDragging ? 'opacity-40 scale-95 border-dashed border-2 border-brand-500' :
+                        isDragOver ? 'ring-2 ring-brand-500 ring-offset-2 border-brand-400 scale-[1.01]' :
+                        'border-slate-200 hover:border-slate-300 hover:shadow-sm'
+                      }`}
+                      style={{
+                        borderTopWidth: '4px',
+                        borderTopColor: palette.border,
+                      }}
+                    >
+                      {/* Card Header */}
+                      <div className="p-4 pb-3 border-b border-slate-100">
+                        <div className="flex items-start justify-between gap-2">
+                          {/* Drag handle & Goal title */}
+                          <div className="flex items-start space-x-2 min-w-0 flex-1">
+                            <div 
+                              className="no-print mt-0.5 cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-600 transition flex-shrink-0"
+                              title="Drag to rearrange card order on page"
+                            >
+                              <i className="fa-solid fa-grip-vertical text-sm"></i>
+                            </div>
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center space-x-1.5">
+                                <span 
+                                  className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0"
+                                  style={{ backgroundColor: palette.dot }}
+                                ></span>
+                                <h3 className="font-bold text-sm sm:text-base text-slate-900 truncate leading-snug" title={goal.title}>
+                                  {goal.title}
+                                </h3>
+                              </div>
+
+                              {goal.description && (
+                                <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">
+                                  {goal.description}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Card Controls & Dismiss Button */}
+                          <div className="flex items-center space-x-1 flex-shrink-0">
+                            {/* Reorder Buttons (Accessible / Keyboard alternative) */}
+                            <div className="no-print hidden sm:flex items-center bg-slate-50 border border-slate-200 rounded-lg p-0.5">
+                              <button
+                                onClick={() => handleMoveGoal(goal.id, -1)}
+                                disabled={idx === 0}
+                                className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-slate-800 disabled:opacity-20 disabled:hover:text-slate-400 rounded transition"
+                                title="Move card left / up"
+                              >
+                                <i className="fa-solid fa-chevron-left text-[9px]"></i>
+                              </button>
+                              <button
+                                onClick={() => handleMoveGoal(goal.id, 1)}
+                                disabled={idx === displayedGoals.length - 1}
+                                className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-slate-800 disabled:opacity-20 disabled:hover:text-slate-400 rounded transition"
+                                title="Move card right / down"
+                              >
+                                <i className="fa-solid fa-chevron-right text-[9px]"></i>
+                              </button>
+                            </div>
+
+                            {/* Dismiss Goal Button */}
+                            <button
+                              onClick={() => handleDismissGoal(goal.id)}
+                              className="no-print p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                              title="Dismiss goal from overview board (can be restored below)"
+                            >
+                              <i className="fa-solid fa-eye-slash text-xs"></i>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Progress meter */}
+                        <div className="mt-3 flex items-center justify-between text-[11px]">
+                          <div className="flex items-center space-x-1.5 font-semibold text-slate-600">
+                            <span 
+                              className="px-1.5 py-0.2 rounded text-[10px] font-bold"
+                              style={{ backgroundColor: palette.badgeBg, color: palette.badgeText }}
+                            >
+                              {data.progressPercent}%
+                            </span>
+                            <span className="text-slate-500">
+                              ({data.completedActions}/{data.totalActions} actions done)
+                            </span>
+                          </div>
+
+                          <div className="text-[10px] text-slate-500 font-medium">
+                            {data.inProgressCount > 0 && (
+                              <span className="text-amber-700 font-bold mr-1.5">{data.inProgressCount} active</span>
+                            )}
+                            <span className="text-emerald-700 font-bold">{data.readyCount} ready</span>
+                          </div>
+                        </div>
+
+                        {/* Progress Bar */}
+                        <div className="w-full bg-slate-100 rounded-full h-1.5 mt-1.5 overflow-hidden">
+                          <div 
+                            className="h-full rounded-full transition-all duration-300"
+                            style={{ 
+                              width: `${data.progressPercent}%`, 
+                              backgroundColor: palette.dot 
+                            }}
+                          ></div>
+                        </div>
+                      </div>
+
+                      {/* Card Body: Top 3 Initiable Actions */}
+                      <div className="p-4 flex-1 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between pb-2 mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                            <span>Top Initiable Actions</span>
+                            <span>Priority Order</span>
+                          </div>
+
+                          {data.initiableActions.length > 0 ? (
+                            <div className="space-y-2.5">
+                              {data.initiableActions.map((action, actionIdx) => {
+                                const isInProgress = action.status === 'in_progress';
+                                const milestone = findNodeMilestone(action.id, nodes);
+                                const hasNotes = (action.evidence || []).length > 0;
+
+                                return (
+                                  <div 
+                                    key={action.id}
+                                    className={`p-2.5 rounded-xl border transition-colors ${
+                                      isInProgress
+                                        ? 'bg-amber-50/60 border-amber-200/90 shadow-2xs'
+                                        : 'bg-slate-50/70 border-slate-200/80 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    <div className="flex items-start space-x-2.5">
+                                      {/* Rank Badge */}
+                                      <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black flex-shrink-0 mt-0.5 ${
+                                        isInProgress 
+                                          ? 'bg-amber-500 text-white' 
+                                          : 'bg-emerald-600 text-white'
+                                      }`}>
+                                        {actionIdx + 1}
+                                      </span>
+
+                                      {/* Interactive Status Checkbox */}
+                                      <button
+                                        type="button"
+                                        onClick={() => onToggleStatus(action)}
+                                        className={`w-5 h-5 rounded-md border flex items-center justify-center flex-shrink-0 mt-0.5 transition ${
+                                          isInProgress
+                                            ? 'bg-amber-100 border-amber-400 text-amber-800 hover:bg-amber-200'
+                                            : 'bg-white border-slate-300 hover:border-emerald-500 text-transparent hover:text-emerald-600'
+                                        }`}
+                                        title={`Status: ${action.status} — Click to advance status`}
+                                      >
+                                        {isInProgress ? (
+                                          <i className="fa-solid fa-play text-[8px] animate-pulse"></i>
+                                        ) : (
+                                          <i className="fa-solid fa-check text-[10px]"></i>
+                                        )}
+                                      </button>
+
+                                      {/* Print-Only Plain Checkbox */}
+                                      <span className="print-only text-xs font-mono font-bold mr-1">
+                                        {isInProgress ? '[▶]' : '[ ]'}
+                                      </span>
+
+                                      {/* Action Details */}
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-start justify-between gap-1.5">
+                                          <span className="font-semibold text-xs sm:text-[13px] text-slate-900 leading-snug break-words">
+                                            {action.title}
+                                          </span>
+
+                                          {/* Status tag */}
+                                          <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full flex-shrink-0 whitespace-nowrap ${
+                                            isInProgress
+                                              ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                              : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                                          }`}>
+                                            {isInProgress ? 'In Progress' : 'Ready'}
+                                          </span>
+                                        </div>
+
+                                        {/* Action metadata: Milestone & Notes */}
+                                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                          {milestone && (
+                                            <span 
+                                              className="inline-flex items-center space-x-1 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-purple-50 text-purple-700 border border-purple-200"
+                                              title={`Milestone: ${milestone.title}`}
+                                            >
+                                              <i className="fa-solid fa-flag text-[8px]"></i>
+                                              <span className="truncate max-w-[120px]">{milestone.title}</span>
+                                            </span>
+                                          )}
+
+                                          {hasNotes && (
+                                            <span 
+                                              className="inline-flex items-center space-x-1 px-1.5 py-0.2 rounded text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200"
+                                              title={`${action.evidence.length} note(s) attached`}
+                                            >
+                                              <i className="fa-solid fa-note-sticky text-[8px] text-amber-600"></i>
+                                              <span>{action.evidence.length}</span>
+                                            </span>
+                                          )}
+
+                                          {/* Action quick utilities (screen only) */}
+                                          <div className="no-print ml-auto flex items-center space-x-1">
+                                            <button
+                                              onClick={() => onAddEvidence(action)}
+                                              className="text-[10px] text-slate-400 hover:text-slate-700 px-1 py-0.5 rounded hover:bg-slate-200/60 transition"
+                                              title="Add note / evidence"
+                                            >
+                                              <i className="fa-solid fa-plus text-[8px] mr-0.5"></i>Note
+                                            </button>
+                                            <button
+                                              onClick={() => onExport(action)}
+                                              className="text-[10px] text-slate-400 hover:text-brand-600 px-1 py-0.5 rounded hover:bg-slate-200/60 transition"
+                                              title="Consult AI about this action"
+                                            >
+                                              <i className="fa-solid fa-wand-magic-sparkles text-[8px] mr-0.5"></i>Ask AI
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="p-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 text-center text-xs">
+                              {data.isComplete ? (
+                                <div>
+                                  <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-xs mx-auto mb-1.5">
+                                    <i className="fa-solid fa-check"></i>
+                                  </div>
+                                  <span className="font-bold text-emerald-800">All actions completed!</span>
+                                  <p className="text-[11px] text-slate-500 mt-0.5">
+                                    This goal is ready to mark done or archive.
+                                  </p>
+                                </div>
+                              ) : data.blockedCount > 0 ? (
+                                <div>
+                                  <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-xs mx-auto mb-1.5">
+                                    <i className="fa-solid fa-lock"></i>
+                                  </div>
+                                  <span className="font-bold text-amber-800">Waiting on prerequisites</span>
+                                  <p className="text-[11px] text-slate-500 mt-0.5">
+                                    All remaining {data.blockedCount} action{data.blockedCount === 1 ? ' is' : 's are'} blocked.
+                                  </p>
+                                </div>
+                              ) : (
+                                <div>
+                                  <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-500 flex items-center justify-center text-xs mx-auto mb-1.5">
+                                    <i className="fa-solid fa-list-check"></i>
+                                  </div>
+                                  <span className="font-bold text-slate-700">No actions defined</span>
+                                  <p className="text-[11px] text-slate-500 mt-0.5">
+                                    Decompose this goal into actions in the Plan Tree.
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Card Sub-Footer info */}
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+                          <span className="truncate">
+                            {data.initiableActions.length < 3 && data.blockedCount > 0 ? (
+                              <span className="text-rose-600 font-medium">{data.blockedCount} action{data.blockedCount === 1 ? '' : 's'} waiting on blockers</span>
+                            ) : (
+                              <span>{data.totalActions} total action{data.totalActions === 1 ? '' : 's'}</span>
+                            )}
+                          </span>
+
+                          <button
+                            onClick={() => onSwitchView('tree')}
+                            className="no-print text-brand-600 hover:text-brand-700 font-semibold flex items-center space-x-1 transition"
+                            title="Focus goal in Plan Tree"
+                          >
+                            <span>Open in Tree</span>
+                            <i className="fa-solid fa-arrow-right text-[9px]"></i>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Dismissed Goals Section (Screen & Print Footnote) */}
+            <div className="pt-4">
+              {/* Screen Version of Dismissed Goals Section */}
+              <div className="no-print bg-slate-50 rounded-2xl border border-slate-200 p-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-200/80">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-7 h-7 rounded-lg bg-white border border-slate-200 text-slate-500 flex items-center justify-center text-xs shadow-2xs">
+                      <i className="fa-solid fa-eye-slash"></i>
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-xs sm:text-sm text-slate-800 flex items-center gap-1.5">
+                        <span>Dismissed Goals</span>
+                        <span className={`px-2 py-0.2 rounded-full text-[10px] font-bold ${
+                          dismissedGoals.length > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-600'
+                        }`}>
+                          {dismissedGoals.length}
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        {dismissedGoals.length > 0 
+                          ? 'Goals hidden from the active board. Click Restore to return any goal to the grid.'
+                          : 'Use the eye-slash button on any card above to dismiss it and focus on selected goals.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {dismissedGoals.length > 0 && (
+                    <button
+                      onClick={handleRestoreAll}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl flex items-center space-x-1.5 shadow-2xs transition self-end sm:self-center"
+                      title="Restore all dismissed goals to the overview grid"
+                    >
+                      <i className="fa-solid fa-rotate-left text-brand-600 text-xs"></i>
+                      <span>Restore All ({dismissedGoals.length})</span>
+                    </button>
+                  )}
+                </div>
+
+                {dismissedGoals.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {dismissedGoals.map(goal => {
+                      const palette = goalColorMap.get(goal.id) || GOAL_COLOR_PALETTES[0];
+                      const data = goalDataMap.get(goal.id);
+                      return (
+                        <div
+                          key={goal.id}
+                          className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 flex items-center space-x-2.5 shadow-2xs hover:border-slate-300 transition"
+                        >
+                          <span 
+                            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                            style={{ backgroundColor: palette.dot }}
+                          ></span>
+
+                          <div className="flex items-baseline space-x-1.5">
+                            <span className="font-semibold text-xs text-slate-800 max-w-[180px] truncate">
+                              {goal.title}
+                            </span>
+                            {data && (
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                ({data.progressPercent}%)
+                              </span>
+                            )}
+                          </div>
+
+                          <button
+                            onClick={() => handleRestoreGoal(goal.id)}
+                            className="px-2 py-0.5 bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 rounded text-[11px] font-semibold flex items-center space-x-1 transition"
+                            title="Restore this goal to the overview board"
+                          >
+                            <i className="fa-solid fa-eye text-[9px]"></i>
+                            <span>Restore</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="mt-2 text-[11px] text-slate-400 italic">
+                    No goals currently dismissed. Click the eye-slash button on any card above to dismiss it and focus on selected goals.
+                  </div>
+                )}
+              </div>
+
+              {/* Print-Only Dismissed Footnote */}
+              {dismissedGoals.length > 0 && (
+                <div className="print-only mt-4 pt-2 border-t border-slate-300 text-[10px] text-slate-500">
+                  <strong>Note:</strong> {dismissedGoals.length} goal{dismissedGoals.length === 1 ? ' was' : 's were'} dismissed from this printout ({dismissedGoals.map(g => g.title).join(', ')}).
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     function App() {
       const [user, setUser] = useState(null);
       const [workspaces, setWorkspaces] = useState([]);
@@ -4520,6 +5413,7 @@
           const params = new URLSearchParams(window.location.search);
           const v = params.get('view');
           if (v === 'print' || window.location.pathname.endsWith('/print')) return 'print';
+          if (v === 'top-actions' || v === 'focus' || v === 'cards') return 'top-actions';
           if (v === 'dependencies') return 'dependencies';
           if (v === 'analytics') return 'analytics';
           if (v === 'archive' || v === 'archived') return 'archive';
@@ -4555,7 +5449,7 @@
       useEffect(() => {
         const handleKeyDown = (e) => {
           if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
-            if (activeView !== 'print') {
+            if (activeView !== 'print' && activeView !== 'top-actions') {
               e.preventDefault();
               switchView('print');
               setTimeout(() => {
@@ -4881,6 +5775,19 @@
                 </button>
 
                 <button
+                  onClick={() => switchView('top-actions')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 ${
+                    activeView === 'top-actions' 
+                      ? 'bg-white text-brand-700 shadow-xs border border-slate-200/70' 
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/50 border border-transparent'
+                  }`}
+                  title="Top Actions: Rearrangeable cards showing top three initiable actions per goal"
+                >
+                  <i className="fa-solid fa-bullseye text-xs"></i>
+                  <span>Top Actions</span>
+                </button>
+
+                <button
                   onClick={() => switchView('dependencies')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 ${
                     activeView === 'dependencies' 
@@ -5042,6 +5949,15 @@
                 <span>Tree</span>
               </button>
               <button
+                onClick={() => switchView('top-actions')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition whitespace-nowrap ${
+                  activeView === 'top-actions' ? 'bg-brand-50 text-brand-700 font-bold' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <i className="fa-solid fa-bullseye text-xs"></i>
+                <span>Top Actions</span>
+              </button>
+              <button
                 onClick={() => switchView('dependencies')}
                 className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition whitespace-nowrap ${
                   activeView === 'dependencies' ? 'bg-brand-50 text-brand-700 font-bold' : 'text-slate-600 hover:text-slate-900'
@@ -5093,6 +6009,7 @@
               <div>
                 <h2 className="text-2xl font-bold text-slate-900">
                   {activeView === 'tree' ? 'Active Execution Plan' : 
+                   activeView === 'top-actions' ? 'Top Initiable Actions by Goal' :
                    activeView === 'analytics' ? 'Progress Analytics' :
                    activeView === 'dependencies' ? 'Relations & Dependencies' : 
                    activeView === 'archive' ? 'Archived Goals' :
@@ -5101,6 +6018,8 @@
                 <p className="text-sm text-slate-600 mt-1">
                   {activeView === 'tree' 
                     ? 'The application owns authoritative truth; export subgraphs to your LLM advisor and paste proposals back.'
+                    : activeView === 'top-actions'
+                    ? 'Rearrangeable goal cards displaying the top three unblocked actions you can initiate right now. Reorder, dismiss goals to focus, or print the board.'
                     : activeView === 'analytics'
                     ? 'Real-time multi-ring progress tracking, velocity metrics, and execution readiness pipeline.'
                     : activeView === 'dependencies'
@@ -5123,6 +6042,16 @@
                     <span>Import Proposal</span>
                   </button>
                 )}
+                {activeView === 'top-actions' && (
+                  <button
+                    onClick={() => window.print()}
+                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center space-x-2 shadow-sm transition"
+                    title="Print top actions overview or save as PDF (Ctrl+P)"
+                  >
+                    <i className="fa-solid fa-print text-xs"></i>
+                    <span>Print Cards</span>
+                  </button>
+                )}
                 {activeView === 'print' && (
                   <button
                     onClick={() => window.print()}
@@ -5133,7 +6062,7 @@
                   </button>
                 )}
                 <button
-                  onClick={() => openHelpTopic(activeView === 'dependencies' ? 'goals-and-actions' : activeView === 'analytics' ? 'progress-analytics' : 'getting-started')}
+                  onClick={() => openHelpTopic(activeView === 'dependencies' ? 'goals-and-actions' : activeView === 'top-actions' ? 'dependencies-readiness' : activeView === 'analytics' ? 'progress-analytics' : 'getting-started')}
                   className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-brand-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg flex items-center space-x-1.5 shadow-2xs transition"
                   title="Open reference guide and canonical glossary for this view"
                 >
@@ -5150,6 +6079,17 @@
                 workspaceName={workspaces.find(w => w.id === currentWorkspaceId)?.name || 'My Goals'}
                 onBack={() => switchView('tree')}
                 onToggleStatus={handleToggleStatus}
+                showToast={showToast}
+              />
+            ) : activeView === 'top-actions' ? (
+              <TopActionsView
+                graphData={graphData}
+                workspaceName={workspaces.find(w => w.id === currentWorkspaceId)?.name || 'My Goals'}
+                workspaceId={currentWorkspaceId}
+                onToggleStatus={handleToggleStatus}
+                onExport={(n) => setExportModalNode(n)}
+                onAddEvidence={(n) => setEvidenceModalNode(n)}
+                onSwitchView={switchView}
                 showToast={showToast}
               />
             ) : activeView === 'dependencies' ? (

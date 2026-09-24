@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server/server.ts",
+    "start": "tsx watch src/server/server.ts",
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
