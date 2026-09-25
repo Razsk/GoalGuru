@@ -34,12 +34,20 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     const user = repo.ensureUser({ id: 'u1', email: 'u1@test.com', displayName: 'U1' });
     const ws = repo.createWorkspace(user.id, 'WS 1');
 
-    // 1. Create a goal manually
+    // 1. Create a goal and milestone manually
     const goal = repo.createNode({
       workspaceId: ws.id,
       type: 'goal',
       parentId: null,
       title: 'Build Web App',
+      status: 'in_progress',
+    });
+
+    const milestone = repo.createNode({
+      workspaceId: ws.id,
+      type: 'milestone',
+      parentId: goal.id,
+      title: 'Phase 1 MVP',
       status: 'in_progress',
     });
 
@@ -51,14 +59,14 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
         type: 'create_node',
         nodeId: 'act_101',
         nodeType: 'action',
-        parentId: goal.id,
+        parentId: milestone.id,
         title: 'Task 1',
       },
       {
         type: 'create_node',
         nodeId: 'act_102',
         nodeType: 'action',
-        parentId: goal.id,
+        parentId: milestone.id,
         title: 'Task 2',
       },
       {
@@ -79,7 +87,7 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     expect(repo.getStateVersion(ws.id)).toBe(2);
 
     const nodes = repo.listNodes(ws.id);
-    expect(nodes).toHaveLength(3); // Goal + 2 Actions
+    expect(nodes).toHaveLength(4); // Goal + Milestone + 2 Actions
 
     const deps = repo.listDependencies(ws.id);
     expect(deps).toHaveLength(1);
@@ -90,8 +98,7 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     expect(undoResult.success).toBe(true);
 
     const nodesAfterUndo = repo.listNodes(ws.id);
-    expect(nodesAfterUndo).toHaveLength(1);
-    expect(nodesAfterUndo[0].id).toBe(goal.id);
+    expect(nodesAfterUndo).toHaveLength(2); // Goal + Milestone
 
     const depsAfterUndo = repo.listDependencies(ws.id);
     expect(depsAfterUndo).toHaveLength(0);
@@ -108,15 +115,22 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
       title: 'Main Goal',
     });
 
+    const milestone = repo.createNode({
+      workspaceId: ws.id,
+      type: 'milestone',
+      parentId: goal.id,
+      title: 'Milestone 1',
+    });
+
     const action = repo.createNode({
       workspaceId: ws.id,
       type: 'action',
-      parentId: goal.id,
+      parentId: milestone.id,
       title: 'Original Title',
       status: 'todo',
     });
 
-    // Assume proposal was exported at stateVersion 2
+    // Assume proposal was exported at stateVersion 1
     const baseVersion = repo.getStateVersion(ws.id);
 
     // User modifies action locally
@@ -148,6 +162,23 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
         type: 'action',
         parentId: null,
         title: 'Invalid Root Action',
+      })
+    ).toThrow(/Invalid hierarchy/);
+
+    const goal = repo.createNode({
+      workspaceId: ws.id,
+      type: 'goal',
+      parentId: null,
+      title: 'Valid Goal',
+    });
+
+    // Action cannot be child of Goal directly without Milestone
+    expect(() =>
+      repo.createNode({
+        workspaceId: ws.id,
+        type: 'action',
+        parentId: goal.id,
+        title: 'Invalid Direct Action',
       })
     ).toThrow(/Invalid hierarchy/);
   });
@@ -275,7 +306,7 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     const user = repo.ensureUser({ id: 'u1', email: 'u1@test.com', displayName: 'U1' });
     const ws = repo.createWorkspace(user.id, 'WS 1');
 
-    // 1. Create a goal with an action and sub-action
+    // 1. Create a goal with a milestone and action
     const goal = repo.createNode({
       workspaceId: ws.id,
       type: 'goal',
@@ -284,19 +315,19 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
       status: 'in_progress',
     });
 
+    const milestone = repo.createNode({
+      workspaceId: ws.id,
+      type: 'milestone',
+      parentId: goal.id,
+      title: 'Milestone Alpha',
+      status: 'todo',
+    });
+
     const action = repo.createNode({
       workspaceId: ws.id,
       type: 'action',
-      parentId: goal.id,
+      parentId: milestone.id,
       title: 'Finalize QA',
-      status: 'done',
-    });
-
-    const subAction = repo.createNode({
-      workspaceId: ws.id,
-      type: 'sub_action',
-      parentId: action.id,
-      title: 'Sign off',
       status: 'done',
     });
 
@@ -312,23 +343,111 @@ describe('SQLite Repository & Scoping (ADR 0010 & ADR 0018)', () => {
     expect(repo.getStateVersion(ws.id)).toBe(vBefore + 1);
 
     const archivedGoal = repo.getNode(goal.id);
+    const archivedMilestone = repo.getNode(milestone.id);
     const archivedAction = repo.getNode(action.id);
-    const archivedSubAction = repo.getNode(subAction.id);
 
     expect(archivedGoal?.archivedAt).toBeTruthy();
+    expect(archivedMilestone?.archivedAt).toBeTruthy();
     expect(archivedAction?.archivedAt).toBeTruthy();
-    expect(archivedSubAction?.archivedAt).toBeTruthy();
 
     // Unarchive goal
     repo.unarchiveGoal(goal.id);
     expect(repo.getStateVersion(ws.id)).toBe(vBefore + 2);
 
     const restoredGoal = repo.getNode(goal.id);
+    const restoredMilestone = repo.getNode(milestone.id);
     const restoredAction = repo.getNode(action.id);
-    const restoredSubAction = repo.getNode(subAction.id);
 
     expect(restoredGoal?.archivedAt).toBeNull();
+    expect(restoredMilestone?.archivedAt).toBeNull();
     expect(restoredAction?.archivedAt).toBeNull();
-    expect(restoredSubAction?.archivedAt).toBeNull();
+  });
+
+  it('cascades deletion from milestone to all its child actions', () => {
+    const user = repo.ensureUser({ id: 'u_casc', email: 'c@test.com', displayName: 'Casc' });
+    const ws = repo.createWorkspace(user.id, 'WS Casc');
+
+    const goal = repo.createNode({
+      workspaceId: ws.id,
+      type: 'goal',
+      parentId: null,
+      title: 'Goal',
+    });
+
+    const ms = repo.createNode({
+      workspaceId: ws.id,
+      type: 'milestone',
+      parentId: goal.id,
+      title: 'Milestone to delete',
+    });
+
+    const act1 = repo.createNode({
+      workspaceId: ws.id,
+      type: 'action',
+      parentId: ms.id,
+      title: 'Action 1',
+    });
+
+    const act2 = repo.createNode({
+      workspaceId: ws.id,
+      type: 'action',
+      parentId: ms.id,
+      title: 'Action 2',
+    });
+
+    expect(repo.listNodes(ws.id)).toHaveLength(4);
+
+    repo.deleteNode(ms.id);
+
+    const remaining = repo.listNodes(ws.id);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].id).toBe(goal.id);
+    expect(repo.getNode(act1.id)).toBeNull();
+    expect(repo.getNode(act2.id)).toBeNull();
+  });
+
+  it('migrates legacy sub_actions and loose actions to milestone architecture', () => {
+    const legacyDb = new DatabaseSync(':memory:');
+    const legacyRepo = new Repository(legacyDb);
+    legacyRepo.initSchema();
+
+    // Insert raw legacy rows simulating an older DB version
+    const now = new Date().toISOString();
+    legacyDb.prepare(`
+      INSERT INTO users VALUES ('u_leg', 'leg@test.com', 'Leg', NULL, ?);
+    `).run(now);
+    legacyDb.prepare(`
+      INSERT INTO workspaces VALUES ('ws_leg', 'u_leg', 'Legacy WS', 1, ?, ?);
+    `).run(now, now);
+
+    // Goal
+    legacyDb.prepare(`
+      INSERT INTO nodes (id, workspace_id, type, parent_id, title, status, version, created_at, updated_at)
+      VALUES ('g_leg', 'ws_leg', 'goal', NULL, 'Legacy Goal', 'todo', 1, ?, ?);
+    `).run(now, now);
+
+    // Parent action with sub-actions
+    legacyDb.prepare(`
+      INSERT INTO nodes (id, workspace_id, type, parent_id, title, status, version, created_at, updated_at)
+      VALUES ('act_parent', 'ws_leg', 'action', 'g_leg', 'Parent Task', 'in_progress', 1, ?, ?);
+    `).run(now, now);
+
+    // Sub-action under parent action
+    legacyDb.prepare(`
+      INSERT INTO nodes (id, workspace_id, type, parent_id, title, status, version, created_at, updated_at)
+      VALUES ('sub_1', 'ws_leg', 'sub_action', 'act_parent', 'Child Step', 'done', 1, ?, ?);
+    `).run(now, now);
+
+    // Re-run initSchema() to trigger migration
+    legacyRepo.initSchema();
+
+    // Verify 'act_parent' was promoted to 'milestone'
+    const parentNode = legacyRepo.getNode('act_parent');
+    expect(parentNode?.type).toBe('milestone');
+
+    // Verify 'sub_1' was promoted to 'action'
+    const childNode = legacyRepo.getNode('sub_1');
+    expect(childNode?.type).toBe('action');
+    expect(childNode?.parentId).toBe('act_parent');
   });
 });

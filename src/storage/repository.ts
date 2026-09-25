@@ -4,6 +4,8 @@ import { Mutation } from '../protocol/types.js';
 import { generateId, generateNodeId } from '../core/id.js';
 import { generateInverseMutations } from '../protocol/changeset.js';
 import { getDescendantNodes } from '../core/progress.js';
+import { deriveMilestoneStatus } from '../core/readiness.js';
+import { validateHierarchicalDependencies } from '../core/cycle.js';
 
 export interface CollisionResult {
   hasCollision: boolean;
@@ -114,6 +116,50 @@ export class Repository {
     } catch {}
     try {
       this.db.exec('ALTER TABLE nodes ADD COLUMN archived_at TEXT;');
+    } catch {}
+
+    // Migration: Promote actions with sub-actions to milestones, and sub-actions to actions
+    try {
+      const subActions = this.db.prepare("SELECT * FROM nodes WHERE type = 'sub_action'").all() as any[];
+      if (subActions.length > 0) {
+        const parentActionIds = [...new Set(subActions.map((s) => s.parent_id).filter(Boolean))];
+        for (const parentId of parentActionIds) {
+          this.db.prepare("UPDATE nodes SET type = 'milestone' WHERE id = ? AND type = 'action'").run(parentId);
+        }
+        this.db.prepare("UPDATE nodes SET type = 'action' WHERE type = 'sub_action'").run();
+      }
+    } catch {}
+
+    // Migration: Wrap any loose actions directly under goals/sub-goals into a milestone
+    try {
+      const looseActions = this.db.prepare(`
+        SELECT a.id, a.workspace_id, a.parent_id
+        FROM nodes a 
+        JOIN nodes p ON a.parent_id = p.id 
+        WHERE a.type = 'action' AND p.type IN ('goal', 'sub_goal')
+      `).all() as any[];
+
+      if (looseActions.length > 0) {
+        const now = new Date().toISOString();
+        const byParent = new Map<string, any[]>();
+        for (const la of looseActions) {
+          if (!byParent.has(la.parent_id)) byParent.set(la.parent_id, []);
+          byParent.get(la.parent_id)!.push(la);
+        }
+
+        for (const [parentId, actions] of byParent.entries()) {
+          const wsId = actions[0].workspace_id;
+          const msId = generateNodeId('milestone');
+          this.db.prepare(`
+            INSERT INTO nodes (id, workspace_id, type, parent_id, title, description, status, version, created_at, updated_at)
+            VALUES (?, ?, 'milestone', ?, 'Initial Milestone', 'Auto-created milestone to house actions', 'todo', 1, ?, ?)
+          `).run(msId, wsId, parentId, now, now);
+
+          for (const act of actions) {
+            this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?').run(msId, act.id);
+          }
+        }
+      }
     } catch {}
   }
 
@@ -278,7 +324,14 @@ export class Repository {
     const existing = this.getNode(nodeId);
     if (!existing) return;
 
-    this.db.prepare('DELETE FROM nodes WHERE id = ?').run(nodeId);
+    const allNodes = this.listNodes(existing.workspaceId);
+    const descendants = getDescendantNodes(nodeId, allNodes);
+    const idsToDelete = [nodeId, ...descendants.map((n) => n.id)];
+
+    const deleteStmt = this.db.prepare('DELETE FROM nodes WHERE id = ?');
+    for (const id of idsToDelete) {
+      deleteStmt.run(id);
+    }
     this.incrementStateVersion(existing.workspaceId);
   }
 
@@ -373,6 +426,12 @@ export class Repository {
       node.evidence = evidenceByNode.get(node.id) || [];
     }
 
+    for (const node of rows) {
+      if (node.type === 'milestone') {
+        node.status = deriveMilestoneStatus(node.id, rows);
+      }
+    }
+
     return rows;
   }
 
@@ -399,6 +458,12 @@ export class Repository {
       .all(nodeId) as unknown as Evidence[];
 
     row.evidence = evidenceRows;
+
+    if (row.type === 'milestone') {
+      const allWorkspaceNodes = this.listNodes(row.workspaceId);
+      row.status = deriveMilestoneStatus(row.id, allWorkspaceNodes);
+    }
+
     return row;
   }
 
@@ -411,6 +476,14 @@ export class Repository {
     // Validate dependency target rules (ADR 0001 & ADR 0003)
     if (fromNode && toNode && !isValidDependencyType(fromNode.type, toNode.type)) {
       throw new Error(`Invalid dependency: '${fromNode.type}' cannot depend on '${toNode.type}'.`);
+    }
+
+    const currentDeps = this.listDependencies(workspaceId);
+    const candidateDeps = [...currentDeps, { fromNodeId, toNodeId }];
+    const allNodes = this.listNodes(workspaceId);
+    const cycleCheck = validateHierarchicalDependencies(candidateDeps, allNodes);
+    if (cycleCheck.hasCycle) {
+      throw new Error(cycleCheck.error || 'Circular or hierarchical dependency detected.');
     }
 
     const id = generateId('dep');
@@ -539,16 +612,27 @@ export class Repository {
     switch (m.type) {
       case 'create_node': {
         let nodeType = m.nodeType;
-        if (m.parentId) {
-          const parent = this.getNode(m.parentId);
-          if (parent) {
-            if ((parent.type === 'action' || parent.type === 'sub_action') && nodeType === 'action') {
-              nodeType = 'sub_action';
-            } else if (
-              (parent.type === 'goal' || parent.type === 'sub_goal' || parent.type === 'milestone') &&
-              nodeType === 'sub_action'
-            ) {
-              nodeType = 'action';
+        if ((nodeType as any) === 'sub_action') {
+          nodeType = 'action';
+        }
+        let parentId = m.parentId || null;
+        if (nodeType === 'action' && parentId) {
+          const parent = this.getNode(parentId);
+          if (parent && (parent.type === 'goal' || parent.type === 'sub_goal')) {
+            const siblings = this.listNodes(workspaceId).filter(
+              (n) => n.parentId === parentId && n.type === 'milestone'
+            );
+            if (siblings.length > 0) {
+              parentId = siblings[0].id;
+            } else {
+              const msNode = this.createNode({
+                workspaceId,
+                type: 'milestone',
+                parentId,
+                title: 'Initial Milestone',
+                description: 'Milestone created to hold actions',
+              });
+              parentId = msNode.id;
             }
           }
         }
@@ -556,7 +640,7 @@ export class Repository {
           workspaceId,
           id: m.nodeId,
           type: nodeType,
-          parentId: m.parentId || null,
+          parentId,
           title: m.title,
           description: m.description,
           inputs: m.inputs,
@@ -634,7 +718,6 @@ export class Repository {
       sub_goal: 1,
       milestone: 2,
       action: 3,
-      sub_action: 4,
     };
 
     const orderedMutations = [...mutations].sort((a, b) => {
@@ -677,20 +760,51 @@ export class Repository {
       idToTypeMap.set(autoCreatedGoal.id, autoCreatedGoal.type);
     }
 
+    // Map goals to milestones for auto-attaching direct actions
+    const goalToMilestone = new Map<string, string>();
+    for (const n of currentNodes) {
+      if (n.type === 'milestone' && n.parentId) {
+        if (!goalToMilestone.has(n.parentId)) {
+          goalToMilestone.set(n.parentId, n.id);
+        }
+      }
+    }
+    for (const m of orderedMutations) {
+      if (m.type === 'create_node' && m.nodeType === 'milestone' && m.parentId) {
+        if (!goalToMilestone.has(m.parentId)) {
+          goalToMilestone.set(m.parentId, m.nodeId || m.tempId || '');
+        }
+      }
+    }
+
     // Attach any orphans to the fallback goal and conform node types to valid hierarchy
     for (const m of orderedMutations) {
       if (m.type === 'create_node' && m.nodeType !== 'goal') {
+        if ((m.nodeType as any) === 'sub_action') {
+          m.nodeType = 'action';
+        }
         if (!m.parentId || (!proposedNodeIds.has(m.parentId) && !existingNodeIds.has(m.parentId))) {
           m.parentId = fallbackGoalId!;
         }
         const parentType = m.parentId ? idToTypeMap.get(m.parentId) : null;
-        if ((parentType === 'action' || parentType === 'sub_action') && m.nodeType === 'action') {
-          m.nodeType = 'sub_action';
-        } else if (
-          (parentType === 'goal' || parentType === 'sub_goal' || parentType === 'milestone') &&
-          m.nodeType === 'sub_action'
-        ) {
-          m.nodeType = 'action';
+        if (m.nodeType === 'action' && (parentType === 'goal' || parentType === 'sub_goal')) {
+          let targetMilestoneId = goalToMilestone.get(m.parentId);
+          if (!targetMilestoneId) {
+            const newMsId = generateNodeId('milestone');
+            goalToMilestone.set(m.parentId, newMsId);
+            orderedMutations.unshift({
+              type: 'create_node',
+              nodeId: newMsId,
+              nodeType: 'milestone',
+              parentId: m.parentId,
+              title: 'Initial Milestone',
+              description: 'Auto-created milestone to house actions',
+            });
+            idToTypeMap.set(newMsId, 'milestone');
+            proposedNodeIds.add(newMsId);
+            targetMilestoneId = newMsId;
+          }
+          m.parentId = targetMilestoneId;
         }
         if (m.nodeId) {
           idToTypeMap.set(m.nodeId, m.nodeType);

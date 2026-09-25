@@ -97,37 +97,37 @@ describe('Temporary ID Resolution (ADR 0009)', () => {
 });
 
 describe('Cascading Deselection Pruning (ADR 0005)', () => {
-  it('prunes child sub-actions when a parent action is deselected', () => {
+  it('prunes child actions when a parent milestone is deselected', () => {
     const mutations: Mutation[] = [
+      {
+        type: 'create_node',
+        tempId: 'temp:ms-1',
+        nodeType: 'milestone',
+        parentId: 'goal_1',
+        title: 'Phase 1 Checkpoint',
+      },
       {
         type: 'create_node',
         tempId: 'temp:act-1',
         nodeType: 'action',
-        parentId: 'goal_1',
-        title: 'Parent Task',
+        parentId: 'temp:ms-1',
+        title: 'Concrete Action 1',
       },
       {
         type: 'create_node',
-        tempId: 'temp:sub-1',
-        nodeType: 'sub_action',
-        parentId: 'temp:act-1',
-        title: 'Child Subtask 1',
-      },
-      {
-        type: 'create_node',
-        tempId: 'temp:act-2',
-        nodeType: 'action',
+        tempId: 'temp:ms-2',
+        nodeType: 'milestone',
         parentId: 'goal_1',
-        title: 'Independent Task',
+        title: 'Independent Phase 2',
       },
     ];
 
-    // User unchecks temp:act-1 (only selects indices 1 and 2, but 1 is child of 0)
-    // Selected IDs: ['temp:sub-1', 'temp:act-2'] -> temp:act-1 was deselected!
-    const pruned = pruneDeselectedMutations(mutations, new Set(['temp:sub-1', 'temp:act-2']));
+    // User unchecks temp:ms-1 (only selects indices 1 and 2, but 1 is child of 0)
+    // Selected IDs: ['temp:act-1', 'temp:ms-2'] -> temp:ms-1 was deselected!
+    const pruned = pruneDeselectedMutations(mutations, new Set(['temp:act-1', 'temp:ms-2']));
 
-    // temp:sub-1 should be pruned because its parent temp:act-1 was deselected
-    expect(pruned.map((m) => (m.type === 'create_node' ? m.tempId : ''))).toEqual(['temp:act-2']);
+    // temp:act-1 should be pruned because its parent temp:ms-1 was deselected
+    expect(pruned.map((m) => (m.type === 'create_node' ? m.tempId : ''))).toEqual(['temp:ms-2']);
   });
 
   it('prunes dependencies when a dependent or dependency target node is deselected', () => {

@@ -1,5 +1,5 @@
 import { Node, NodeType, NodeStatus } from './types.js';
-import { NodeReadinessInfo } from './readiness.js';
+import { NodeReadinessInfo, deriveMilestoneStatus } from './readiness.js';
 
 export interface ProgressMetric {
   total: number;
@@ -95,27 +95,14 @@ export function getDescendantNodes(parentId: string, nodes: Node[]): Node[] {
  * Computes the progress percentage and action counts for a specific node and its subtree.
  */
 export function computeNodeProgress(node: Node, allNodes: Node[]): { completed: number; total: number; percentage: number } {
-  if (node.type === 'action' || node.type === 'sub_action') {
-    const descendants = getDescendantNodes(node.id, allNodes);
-    const subActions = descendants.filter((n) => n.type === 'sub_action');
-
-    if (subActions.length === 0) {
-      const isDone = node.status === 'done' ? 1 : 0;
-      return { completed: isDone, total: 1, percentage: isDone ? 100 : 0 };
-    }
-
-    const total = subActions.length + 1;
-    const completed = (node.status === 'done' ? 1 : 0) + subActions.filter((n) => n.status === 'done').length;
-    return {
-      completed,
-      total,
-      percentage: Math.round((completed / total) * 100),
-    };
+  if (node.type === 'action') {
+    const isDone = node.status === 'done' ? 1 : 0;
+    return { completed: isDone, total: 1, percentage: isDone ? 100 : 0 };
   }
 
-  // For Goal, Sub-Goal, Milestone: aggregate descendant actions & sub-actions
+  // For Goal, Sub-Goal, Milestone: aggregate descendant actions
   const descendants = getDescendantNodes(node.id, allNodes);
-  const actions = descendants.filter((n) => n.type === 'action' || n.type === 'sub_action');
+  const actions = descendants.filter((n) => n.type === 'action');
 
   if (actions.length === 0) {
     // If no child actions exist, fallback to direct node status
@@ -162,17 +149,25 @@ export function computeWorkspaceProgress(
   const activeNodes = nodes.filter((n) => !n.archivedAt);
   const archivedGoalsCount = nodes.filter((n) => n.type === 'goal' && !!n.archivedAt).length;
 
-  const actionsList = activeNodes.filter((n) => n.type === 'action' || n.type === 'sub_action');
-  const milestonesList = activeNodes.filter((n) => n.type === 'milestone');
-  const goalsList = activeNodes.filter((n) => n.type === 'goal' || n.type === 'sub_goal');
-  const rootGoals = activeNodes.filter((n) => n.type === 'goal');
+  // Enrich milestones with their derived statuses
+  const effectiveActiveNodes = activeNodes.map((n) => {
+    if (n.type === 'milestone') {
+      return { ...n, status: deriveMilestoneStatus(n.id, activeNodes) };
+    }
+    return n;
+  });
+
+  const actionsList = effectiveActiveNodes.filter((n) => n.type === 'action');
+  const milestonesList = effectiveActiveNodes.filter((n) => n.type === 'milestone');
+  const goalsList = effectiveActiveNodes.filter((n) => n.type === 'goal' || n.type === 'sub_goal');
+  const rootGoals = effectiveActiveNodes.filter((n) => n.type === 'goal');
 
   const actions = computeMetricGroup(actionsList);
   const milestones = computeMetricGroup(milestonesList);
   const goals = computeMetricGroup(goalsList);
 
-  const totalNodes = activeNodes.length;
-  const completedNodes = activeNodes.filter((n) => n.status === 'done').length;
+  const totalNodes = effectiveActiveNodes.length;
+  const completedNodes = effectiveActiveNodes.filter((n) => n.status === 'done').length;
   const overallPercentage = totalNodes > 0 ? Math.round((completedNodes / totalNodes) * 100) : 0;
 
   // Readiness pipeline categorization
@@ -192,7 +187,7 @@ export function computeWorkspaceProgress(
     return (readinessMap as Record<string, NodeReadinessInfo>)[nodeId]?.readiness || 'ready';
   };
 
-  for (const node of activeNodes) {
+  for (const node of effectiveActiveNodes) {
     if (node.status === 'done') {
       pipeline.done.push(node);
     } else if (node.status === 'abandoned') {
@@ -245,8 +240,8 @@ export function computeWorkspaceProgress(
   const goalRings: RingData[] = [];
 
   rootGoals.forEach((goal, index) => {
-    const descendants = getDescendantNodes(goal.id, activeNodes);
-    const goalActions = descendants.filter((n) => n.type === 'action' || n.type === 'sub_action');
+    const descendants = getDescendantNodes(goal.id, effectiveActiveNodes);
+    const goalActions = descendants.filter((n) => n.type === 'action');
     const goalMilestones = descendants.filter((n) => n.type === 'milestone');
 
     const totalActions = goalActions.length;

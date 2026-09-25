@@ -7,9 +7,9 @@ Goal Guru interacts with an external LLM using structured request modes. Each mo
 The following 4 modes are prioritized for the initial MVP to cover the end-to-end planning and execution loop:
 
 ### 1. `create_plan`
-* **Intent**: Decompose a newly defined Goal, Sub-Goal, or Milestone into an actionable hierarchy of Actions and Sub-Actions with explicit dependencies.
+* **Intent**: Decompose a newly defined Goal, Sub-Goal, or Milestone into an actionable hierarchy of Milestones and Actions with explicit dependencies.
 * **Context Exported**: Target Goal/Milestone, parent Goal context, and any existing peer milestones.
-* **Expected Output**: Change Set containing `create_node` mutations for Actions (using `temp:act-N` IDs) and `add_dependency` links, plus high-level execution advice.
+* **Expected Output**: Change Set containing `create_node` mutations for Milestones and Actions (using `temp:ms-N` and `temp:act-N` IDs) and `add_dependency` links, plus high-level execution advice.
 
 ### 2. `action_assistance`
 * **Intent**: Provide execution advice, step-by-step instructions, or technical research for a specific active Action.
@@ -60,7 +60,7 @@ The remaining 8 modes extend Goal Guru's analytical and advisory capabilities an
 ### 10. `blocker_analysis`
 * **Intent**: Deep-dive into an active blocker preventing an Action from proceeding; brainstorm workarounds, unblocking steps, or escalation strategies.
 * **Context Exported**: Blocked Action, its blocker notes, and blocking dependency.
-* **Expected Output**: Actionable advice on resolving the impediment, plus proposed sub-actions to unblock the path.
+* **Expected Output**: Actionable advice on resolving the impediment, plus proposed actions to unblock the path.
 
 ### 11. `review`
 * **Intent**: Periodic retrospective on overall goal health, pacing, risk accumulation, and alignment with original intent.

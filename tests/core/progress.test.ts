@@ -6,6 +6,7 @@ import {
   computeWorkspaceProgress,
   getDescendantNodes,
 } from '../../src/core/progress.js';
+import { deriveMilestoneStatus } from '../../src/core/readiness.js';
 
 describe('Progress Calculation Engine (src/core/progress.ts)', () => {
   const sampleNodes: Node[] = [
@@ -26,7 +27,7 @@ describe('Progress Calculation Engine (src/core/progress.ts)', () => {
       type: 'milestone',
       parentId: 'g1',
       title: 'MVP Phase',
-      status: 'in_progress',
+      status: 'todo', // will be derived as in_progress
       evidence: [],
       createdAt: '',
       updatedAt: '',
@@ -54,10 +55,10 @@ describe('Progress Calculation Engine (src/core/progress.ts)', () => {
       updatedAt: '',
     },
     {
-      id: 'sa1',
+      id: 'a3',
       workspaceId: 'ws1',
-      type: 'sub_action',
-      parentId: 'a2',
+      type: 'action',
+      parentId: 'm1',
       title: 'Write Auth',
       status: 'done',
       evidence: [],
@@ -65,10 +66,10 @@ describe('Progress Calculation Engine (src/core/progress.ts)', () => {
       updatedAt: '',
     },
     {
-      id: 'sa2',
+      id: 'a4',
       workspaceId: 'ws1',
-      type: 'sub_action',
-      parentId: 'a2',
+      type: 'action',
+      parentId: 'm1',
       title: 'Write DB Schema',
       status: 'todo',
       evidence: [],
@@ -91,34 +92,39 @@ describe('Progress Calculation Engine (src/core/progress.ts)', () => {
   it('correctly retrieves descendant nodes recursively', () => {
     const g1Descendants = getDescendantNodes('g1', sampleNodes);
     expect(g1Descendants.map((n) => n.id)).toEqual(
-      expect.arrayContaining(['m1', 'a1', 'a2', 'sa1', 'sa2'])
+      expect.arrayContaining(['m1', 'a1', 'a2', 'a3', 'a4'])
     );
     expect(g1Descendants).toHaveLength(5);
 
-    const a2Descendants = getDescendantNodes('a2', sampleNodes);
-    expect(a2Descendants.map((n) => n.id)).toEqual(['sa1', 'sa2']);
+    const m1Descendants = getDescendantNodes('m1', sampleNodes);
+    expect(m1Descendants.map((n) => n.id)).toEqual(['a1', 'a2', 'a3', 'a4']);
   });
 
-  it('computes node progress for action with sub-actions', () => {
-    // a2 (status in_progress) has 2 sub-actions: sa1 (done), sa2 (todo)
-    // Total items for a2 = 1 (a2 itself) + 2 (sub-actions) = 3 items. Completed = 0 + 1 = 1 (33%)
-    const progress = computeNodeProgress(sampleNodes.find((n) => n.id === 'a2')!, sampleNodes);
-    expect(progress.total).toBe(3);
-    expect(progress.completed).toBe(1);
-    expect(progress.percentage).toBe(33);
-  });
-
-  it('computes node progress for leaf action with no sub-actions', () => {
+  it('computes node progress for action leaf nodes', () => {
     const a1 = sampleNodes.find((n) => n.id === 'a1')!;
-    const progress = computeNodeProgress(a1, sampleNodes);
-    expect(progress.total).toBe(1);
-    expect(progress.completed).toBe(1);
-    expect(progress.percentage).toBe(100);
+    const pDone = computeNodeProgress(a1, sampleNodes);
+    expect(pDone.total).toBe(1);
+    expect(pDone.completed).toBe(1);
+    expect(pDone.percentage).toBe(100);
+
+    const a4 = sampleNodes.find((n) => n.id === 'a4')!;
+    const pTodo = computeNodeProgress(a4, sampleNodes);
+    expect(pTodo.total).toBe(1);
+    expect(pTodo.completed).toBe(0);
+    expect(pTodo.percentage).toBe(0);
   });
 
-  it('computes goal subtree progress based on descendant actions and sub-actions', () => {
-    // g1 has actions: a1 (done), a2 (in_progress), sa1 (done), sa2 (todo).
-    // Total actions/sub-actions = 4. Done = 2 (a1, sa1). Progress = 50%
+  it('computes milestone progress based on its child actions', () => {
+    // m1 has 4 actions: a1 (done), a2 (in_progress), a3 (done), a4 (todo)
+    // 2 / 4 = 50%
+    const m1 = sampleNodes.find((n) => n.id === 'm1')!;
+    const progress = computeNodeProgress(m1, sampleNodes);
+    expect(progress.total).toBe(4);
+    expect(progress.completed).toBe(2);
+    expect(progress.percentage).toBe(50);
+  });
+
+  it('computes goal subtree progress based on descendant actions', () => {
     const g1 = sampleNodes.find((n) => n.id === 'g1')!;
     const progress = computeNodeProgress(g1, sampleNodes);
     expect(progress.total).toBe(4);
@@ -133,7 +139,7 @@ describe('Progress Calculation Engine (src/core/progress.ts)', () => {
   });
 
   it('computes metric groups for actions, milestones, and goals', () => {
-    const actions = sampleNodes.filter((n) => n.type === 'action' || n.type === 'sub_action');
+    const actions = sampleNodes.filter((n) => n.type === 'action');
     const metric = computeMetricGroup(actions);
     expect(metric.total).toBe(4);
     expect(metric.completed).toBe(2);
@@ -144,21 +150,22 @@ describe('Progress Calculation Engine (src/core/progress.ts)', () => {
 
   it('computes complete workspace summary with tier rings and readiness pipeline', () => {
     const readinessMap = new Map([
-      ['sa2', { readiness: 'blocked' as const, blockingNodeIds: ['sa1'] }],
+      ['a4', { readiness: 'blocked' as const, blockingNodeIds: ['a2'] }],
     ]);
 
     const summary = computeWorkspaceProgress(sampleNodes, readinessMap);
 
-    // Total nodes = 7, completed (a1, sa1, g2) = 3. 3/7 = 43%
+    // Total nodes = 7 (g1, m1, a1, a2, a3, a4, g2).
+    // Completed nodes: a1 (done), a3 (done), g2 (done). Total = 3. 3/7 = 43%
     expect(summary.totalNodes).toBe(7);
     expect(summary.completedNodes).toBe(3);
     expect(summary.overallPercentage).toBe(43);
 
     // Pipeline
     expect(summary.pipeline.done.map((n) => n.id)).toEqual(
-      expect.arrayContaining(['a1', 'sa1', 'g2'])
+      expect.arrayContaining(['a1', 'a3', 'g2'])
     );
-    expect(summary.pipeline.blocked.map((n) => n.id)).toEqual(['sa2']);
+    expect(summary.pipeline.blocked.map((n) => n.id)).toEqual(['a4']);
     expect(summary.pipeline.inProgress.map((n) => n.id)).toEqual(
       expect.arrayContaining(['g1', 'm1', 'a2'])
     );
@@ -195,12 +202,56 @@ describe('Progress Calculation Engine (src/core/progress.ts)', () => {
     expect(summary.totalNodes).toBe(6);
     expect(summary.archivedGoalsCount).toBe(1);
 
-    // g2 was done, so completed nodes drops from 3 to 2 (a1, sa1)
+    // g2 was done, so completed nodes drops from 3 to 2 (a1, a3)
     expect(summary.completedNodes).toBe(2);
     expect(summary.overallPercentage).toBe(Math.round((2 / 6) * 100)); // 33%
 
     // Only g1 ring should exist in active goal rings
     expect(summary.goalRings).toHaveLength(1);
     expect(summary.goalRings[0].id).toBe('ring_goal_g1');
+  });
+
+  describe('deriveMilestoneStatus logic', () => {
+    it('returns todo for empty milestone', () => {
+      const nodes: Node[] = [
+        { id: 'm1', workspaceId: 'ws1', type: 'milestone', parentId: 'g1', title: 'M1', status: 'todo', evidence: [], createdAt: '', updatedAt: '' }
+      ];
+      expect(deriveMilestoneStatus('m1', nodes)).toBe('todo');
+    });
+
+    it('returns done when all actions are done', () => {
+      const nodes: Node[] = [
+        { id: 'm1', workspaceId: 'ws1', type: 'milestone', parentId: 'g1', title: 'M1', status: 'todo', evidence: [], createdAt: '', updatedAt: '' },
+        { id: 'a1', workspaceId: 'ws1', type: 'action', parentId: 'm1', title: 'A1', status: 'done', evidence: [], createdAt: '', updatedAt: '' },
+        { id: 'a2', workspaceId: 'ws1', type: 'action', parentId: 'm1', title: 'A2', status: 'done', evidence: [], createdAt: '', updatedAt: '' }
+      ];
+      expect(deriveMilestoneStatus('m1', nodes)).toBe('done');
+    });
+
+    it('returns done when actions are done or abandoned (with >= 1 done)', () => {
+      const nodes: Node[] = [
+        { id: 'm1', workspaceId: 'ws1', type: 'milestone', parentId: 'g1', title: 'M1', status: 'todo', evidence: [], createdAt: '', updatedAt: '' },
+        { id: 'a1', workspaceId: 'ws1', type: 'action', parentId: 'm1', title: 'A1', status: 'done', evidence: [], createdAt: '', updatedAt: '' },
+        { id: 'a2', workspaceId: 'ws1', type: 'action', parentId: 'm1', title: 'A2', status: 'abandoned', evidence: [], createdAt: '', updatedAt: '' }
+      ];
+      expect(deriveMilestoneStatus('m1', nodes)).toBe('done');
+    });
+
+    it('returns abandoned when all actions are abandoned', () => {
+      const nodes: Node[] = [
+        { id: 'm1', workspaceId: 'ws1', type: 'milestone', parentId: 'g1', title: 'M1', status: 'todo', evidence: [], createdAt: '', updatedAt: '' },
+        { id: 'a1', workspaceId: 'ws1', type: 'action', parentId: 'm1', title: 'A1', status: 'abandoned', evidence: [], createdAt: '', updatedAt: '' }
+      ];
+      expect(deriveMilestoneStatus('m1', nodes)).toBe('abandoned');
+    });
+
+    it('returns in_progress when any action is in_progress', () => {
+      const nodes: Node[] = [
+        { id: 'm1', workspaceId: 'ws1', type: 'milestone', parentId: 'g1', title: 'M1', status: 'todo', evidence: [], createdAt: '', updatedAt: '' },
+        { id: 'a1', workspaceId: 'ws1', type: 'action', parentId: 'm1', title: 'A1', status: 'in_progress', evidence: [], createdAt: '', updatedAt: '' },
+        { id: 'a2', workspaceId: 'ws1', type: 'action', parentId: 'm1', title: 'A2', status: 'todo', evidence: [], createdAt: '', updatedAt: '' }
+      ];
+      expect(deriveMilestoneStatus('m1', nodes)).toBe('in_progress');
+    });
   });
 });

@@ -25,19 +25,19 @@
       id: 'goal',
       term: 'Goal',
       category: 'Core Language',
-      definition: 'A high-level desired outcome or objective that contains sub-goals, milestones, and actions.',
+      definition: 'A high-level desired outcome or objective that contains milestones (and optional sub-goals).',
       avoid: ['Project', 'epic', 'target'],
       details: 'Goals form the root containers in the containment tree. They define the overarching mission and measure completion through descendant action and milestone progress.',
-      relatedTermIds: ['milestone', 'action', 'sub-action', 'workspace'],
+      relatedTermIds: ['milestone', 'action', 'workspace'],
       relatedTopicIds: ['goals-and-actions', 'progress-analytics'],
     },
     {
       id: 'milestone',
       term: 'Milestone',
       category: 'Core Language',
-      definition: 'A significant checkpoint or target state within a goal that marks major progress or delivery.',
+      definition: 'A significant checkpoint or achievement reached by performing all the concrete actions grouped underneath it, realizing its benefits as a stepping stone toward the goal.',
       avoid: ['Phase', 'sprint', 'deliverable'],
-      details: 'Milestones anchor the sequential roadmap. They can participate in cross-goal dependency chains to enforce prerequisite stage gates before subsequent actions proceed.',
+      details: 'Milestones anchor the sequential roadmap and describe expected outcomes and benefits. Milestone status is derived automatically from child actions. Milestones can participate in dependency chains to enforce prerequisite stage gates before subsequent milestones proceed.',
       relatedTermIds: ['goal', 'action', 'dependency', 'readiness'],
       relatedTopicIds: ['goals-and-actions', 'dependencies-readiness', 'progress-analytics'],
     },
@@ -45,29 +45,19 @@
       id: 'action',
       term: 'Action',
       category: 'Core Language',
-      definition: 'An executable task or discrete step performed by the user to advance toward a goal. Can be recursively decomposed into sub-actions.',
+      definition: 'A concrete, executable step grouped under a milestone to advance toward its achievement. Leaf execution item that can include guidance and context in its description.',
       avoid: ['Task', 'todo', 'ticket', 'item'],
-      details: 'Actions are the foundational execution units. They have stored execution status and dynamically computed readiness based on inbound prerequisites.',
-      relatedTermIds: ['sub-action', 'goal', 'milestone', 'status', 'readiness', 'evidence'],
+      details: 'Actions are the foundational execution units. They belong strictly to a milestone and have stored execution status and dynamically computed readiness based on inbound prerequisites and milestone stage gates.',
+      relatedTermIds: ['goal', 'milestone', 'status', 'readiness', 'evidence'],
       relatedTopicIds: ['goals-and-actions', 'dependencies-readiness'],
-    },
-    {
-      id: 'sub-action',
-      term: 'Sub-Action',
-      category: 'Core Language',
-      definition: 'An action nested within a parent action to decompose complex execution steps.',
-      avoid: ['Sub-task', 'nested task', 'child step'],
-      details: 'Sub-actions enable arbitrary recursive nesting of tasks without altering execution semantics. If a parent action is deselected during proposal review, child sub-actions cascade automatically.',
-      relatedTermIds: ['action', 'change-set'],
-      relatedTopicIds: ['goals-and-actions', 'proposals-exchange'],
     },
     {
       id: 'dependency',
       term: 'Dependency',
       category: 'Core Language',
-      definition: 'A directed relationship indicating that a node cannot proceed until another node is completed. Allowed between Actions and Milestones across goals.',
+      definition: 'A directed relationship indicating that a node cannot proceed until another node is completed. Allowed between milestones or between actions.',
       avoid: ['Prerequisite', 'blocker edge', 'link'],
-      details: 'Dependencies model graph constraints: fromNodeId must reach "done" before toNodeId becomes "ready". Dependencies are strictly validated against Directed Acyclic Graph (DAG) cycles.',
+      details: 'Dependencies model graph constraints: fromNodeId must reach "done" before toNodeId becomes "ready". Dependencies are strictly validated against Directed Acyclic Graph (DAG) cycles and hierarchical backward deadlocks.',
       relatedTermIds: ['readiness', 'cycle', 'action', 'milestone'],
       relatedTopicIds: ['dependencies-readiness', 'safety-undo'],
     },
@@ -242,16 +232,16 @@
       id: 'goals-and-actions',
       title: 'Containment Hierarchy & The Node Model',
       category: 'Core Concepts',
-      summary: 'Master the decomposition hierarchy: Goals, Sub-Goals, Milestones, Actions, and recursive Sub-Actions.',
+      summary: 'Master the decomposition hierarchy: Goals, Sub-Goals, Milestones, and concrete Actions.',
       readTime: '5 min read',
       icon: 'fa-diagram-project',
       sections: [
         {
           title: 'The Decomposition Hierarchy',
-          content: 'Goal Guru organizes complex endeavors into a clean, hierarchical tree:\n\n* **[Goal](term:goal)**: The top-level desired outcome or strategic objective (e.g. *"Launch SaaS MVP"*).\n* **[Milestone](term:milestone)**: A significant checkpoint or deliverable target within a goal (e.g. *"Alpha Testing Completed"*). Milestones can participate in cross-goal dependency chains.\n* **[Action](term:action)**: An executable task or discrete step performed to achieve progress (e.g. *"Implement Stripe Billing"*).\n* **[Sub-Action](term:sub-action)**: A nested action that decomposes a complex action into granular steps. Sub-actions can be recursively nested to any required depth.',
+          content: 'Goal Guru organizes complex endeavors into a clean, hierarchical tree:\n\n* **[Goal](term:goal)**: The top-level desired outcome or strategic objective (e.g. *"Launch SaaS MVP"*).\n* **[Milestone](term:milestone)**: A significant checkpoint or achievement realized by performing all actions grouped underneath it (e.g. *"Alpha Testing Completed"*). Milestone status is automatically derived.\n* **[Action](term:action)**: A concrete, executable step performed to achieve milestone progress (e.g. *"Implement Stripe Billing"*). Actions are leaf nodes and contain rich guidance and advice in their descriptions.',
           tips: [
             'Keep top-level Goals outcome-focused rather than activity-focused.',
-            'Decompose large actions into Sub-Actions when steps take longer than a single work session.'
+            'Group concrete steps under Milestones that represent clear, beneficial achievements.'
           ]
         },
         {
@@ -268,7 +258,7 @@
         }
       ],
       relatedTopicIds: ['dependencies-readiness', 'progress-analytics', 'getting-started'],
-      relatedTermIds: ['goal', 'milestone', 'action', 'sub-action', 'status', 'archive']
+      relatedTermIds: ['goal', 'milestone', 'action', 'status', 'archive']
     },
     {
       id: 'dependencies-readiness',
@@ -339,7 +329,7 @@
           title: 'Temporary References & Normalized Mutations',
           content: 'A [proposal](term:proposal) communicates state modifications through normalized [mutations](term:mutation) grouped in a [change set](term:change-set):\n* `create_node`: Spawns a new node. Uses a [temporary reference](term:temporary-reference) (e.g., `temp:act-1`) so sibling mutations and dependencies can link to it before a database ID is minted.\n* `update_node`: Updates title, description, or criteria.\n* `update_status`: Advances or updates execution status.\n* `delete_node`: Removes a node and its sub-tree.\n* `add_dependency` & `remove_dependency`: Adjusts prerequisite constraints.\n* `add_evidence`: Records structured notes or citations.',
           tips: [
-            'If you deselect a parent mutation during review, Goal Guru automatically cascades and deselects its child sub-actions to preserve referential integrity.',
+            'If you deselect a parent milestone during review, Goal Guru automatically cascades and deselects its child actions to preserve referential integrity.',
             'If you edited nodes locally while waiting for an AI response, Goal Guru alerts you to [collisions](term:collision) before committing.'
           ]
         }
@@ -357,7 +347,7 @@
       sections: [
         {
           title: 'The Core Execution Quad',
-          content: 'Each time you export a node to an LLM, you choose a [request mode](term:request-mode) that dictates the objective and prompt framing:\n\n1. **`create_plan`**: Decomposes a newly defined Goal, Sub-Goal, or Milestone into an actionable hierarchy of Actions and Sub-Actions with explicit dependencies.\n2. **`action_assistance`**: Provides in-depth execution advice, research notes, and step-by-step guidance for a specific active Action without altering graph structure.\n3. **`report_progress`**: Ingests your free-form work notes, interprets what was accomplished, marks completed tasks *done*, and proposes follow-up steps.\n4. **`replan`**: Restructures the remaining open plan when a blocker is encountered, milestones shift, or scope changes.'
+          content: 'Each time you export a node to an LLM, you choose a [request mode](term:request-mode) that dictates the objective and prompt framing:\n\n1. **`create_plan`**: Decomposes a newly defined Goal, Sub-Goal, or Milestone into an actionable hierarchy of Milestones and Actions with explicit dependencies.\n2. **`action_assistance`**: Provides in-depth execution advice, research notes, and step-by-step guidance for a specific active Action without altering graph structure.\n3. **`report_progress`**: Ingests your free-form work notes, interprets what was accomplished, marks completed tasks *done*, and proposes follow-up steps.\n4. **`replan`**: Restructures the remaining open plan when a blocker is encountered, milestones shift, or scope changes.'
         },
         {
           title: 'Asymmetric Causal Path Pruning',

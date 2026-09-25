@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { Node, Dependency } from '../../src/core/types.js';
 import { getTopInitiableActionsForGoal } from '../../src/core/top-actions.js';
 
@@ -121,7 +121,8 @@ describe('Top Initiable Actions Engine (src/core/top-actions.ts)', () => {
 
     // Blocked task is NOT in top initiable actions
     expect(remainingIds).not.toContain('act-blocked');
-    expect(remainingIds).not.toContain('act-completed');
+    // Verify milestoneTitle is populated on initiable actions
+    expect(summary.initiableActions[0].milestoneTitle).toBe('Storefront Setup');
   });
 
   it('respects topological causal ordering among ready actions', () => {
@@ -139,14 +140,87 @@ describe('Top Initiable Actions Engine (src/core/top-actions.ts)', () => {
     expect(summary.blockedCount).toBe(2); // act-ready-2 and act-blocked
   });
 
+  it('excludes actions from blocked milestone when milestone dependency is not met', () => {
+    const multiMilestoneNodes: Node[] = [
+      sampleGoal,
+      {
+        id: 'm-1',
+        workspaceId: 'ws-1',
+        type: 'milestone',
+        parentId: 'goal-1',
+        title: 'Phase 1',
+        status: 'todo',
+        evidence: [],
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'act-m1',
+        workspaceId: 'ws-1',
+        type: 'action',
+        parentId: 'm-1',
+        title: 'Task in Phase 1',
+        status: 'todo',
+        evidence: [],
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'm-2',
+        workspaceId: 'ws-1',
+        type: 'milestone',
+        parentId: 'goal-1',
+        title: 'Phase 2',
+        status: 'todo',
+        evidence: [],
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'act-m2',
+        workspaceId: 'ws-1',
+        type: 'action',
+        parentId: 'm-2',
+        title: 'Task in Phase 2',
+        status: 'todo',
+        evidence: [],
+        createdAt: '',
+        updatedAt: '',
+      },
+    ];
+
+    // m-2 depends on m-1
+    const dependencies: Dependency[] = [
+      { id: 'dep-m', workspaceId: 'ws-1', fromNodeId: 'm-1', toNodeId: 'm-2', createdAt: '' },
+    ];
+
+    const summary = getTopInitiableActionsForGoal('goal-1', multiMilestoneNodes, dependencies);
+
+    // act-m1 is ready; act-m2 is blocked by milestone m-1
+    expect(summary.initiableActions.map((a) => a.id)).toEqual(['act-m1']);
+    expect(summary.blockedCount).toBe(1);
+    expect(summary.readyCount).toBe(1);
+  });
+
   it('handles goals with all actions completed', () => {
     const completedNodes: Node[] = [
       sampleGoal,
       {
+        id: 'm-1',
+        workspaceId: 'ws-1',
+        type: 'milestone',
+        parentId: 'goal-1',
+        title: 'Milestone 1',
+        status: 'done',
+        evidence: [],
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
         id: 'act-1',
         workspaceId: 'ws-1',
         type: 'action',
-        parentId: 'goal-1',
+        parentId: 'm-1',
         title: 'Task 1',
         status: 'done',
         evidence: [],
@@ -157,7 +231,7 @@ describe('Top Initiable Actions Engine (src/core/top-actions.ts)', () => {
         id: 'act-2',
         workspaceId: 'ws-1',
         type: 'action',
-        parentId: 'goal-1',
+        parentId: 'm-1',
         title: 'Task 2',
         status: 'done',
         evidence: [],
@@ -178,6 +252,17 @@ describe('Top Initiable Actions Engine (src/core/top-actions.ts)', () => {
     const blockedNodes: Node[] = [
       sampleGoal,
       {
+        id: 'm-1',
+        workspaceId: 'ws-1',
+        type: 'milestone',
+        parentId: 'goal-1',
+        title: 'Milestone 1',
+        status: 'todo',
+        evidence: [],
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
         id: 'act-prereq',
         workspaceId: 'ws-1',
         type: 'action',
@@ -192,7 +277,7 @@ describe('Top Initiable Actions Engine (src/core/top-actions.ts)', () => {
         id: 'act-waiting',
         workspaceId: 'ws-1',
         type: 'action',
-        parentId: 'goal-1',
+        parentId: 'm-1',
         title: 'Waiting Action',
         status: 'todo',
         evidence: [],

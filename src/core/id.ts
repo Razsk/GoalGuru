@@ -22,8 +22,6 @@ export function generateNodeId(type: NodeType): string {
       return `mile_${generateNanoId(8)}`;
     case 'action':
       return `act_${generateNanoId(8)}`;
-    case 'sub_action':
-      return `act_${generateNanoId(8)}`; // actions and sub-actions share act_ prefix for consistency
     default:
       return `node_${generateNanoId(8)}`;
   }

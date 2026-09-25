@@ -843,19 +843,12 @@
     }
 
     function computeNodeProgress(node, allNodes) {
-      if (node.type === 'action' || node.type === 'sub_action') {
-        const descendants = getDescendantNodes(node.id, allNodes);
-        const subActions = descendants.filter(n => n.type === 'sub_action');
-        if (subActions.length === 0) {
-          const isDone = node.status === 'done' ? 1 : 0;
-          return { completed: isDone, total: 1, percentage: isDone ? 100 : 0 };
-        }
-        const total = subActions.length + 1;
-        const completed = (node.status === 'done' ? 1 : 0) + subActions.filter(n => n.status === 'done').length;
-        return { completed, total, percentage: Math.round((completed / total) * 100) };
+      if (node.type === 'action') {
+        const isDone = node.status === 'done' ? 1 : 0;
+        return { completed: isDone, total: 1, percentage: isDone ? 100 : 0 };
       }
       const descendants = getDescendantNodes(node.id, allNodes);
-      const actions = descendants.filter(n => n.type === 'action' || n.type === 'sub_action');
+      const actions = descendants.filter(n => n.type === 'action');
       if (actions.length === 0) {
         const isDone = node.status === 'done' ? 1 : 0;
         return { completed: isDone, total: 1, percentage: isDone ? 100 : 0 };
@@ -869,7 +862,7 @@
       const activeNodes = (nodes || []).filter(n => !n.archivedAt);
       const archivedGoalsCount = (nodes || []).filter(n => n.type === 'goal' && !!n.archivedAt).length;
 
-      const actionsList = activeNodes.filter(n => n.type === 'action' || n.type === 'sub_action');
+      const actionsList = activeNodes.filter(n => n.type === 'action');
       const milestonesList = activeNodes.filter(n => n.type === 'milestone');
       const goalsList = activeNodes.filter(n => n.type === 'goal' || n.type === 'sub_goal');
       const rootGoals = activeNodes.filter(n => n.type === 'goal');
@@ -913,7 +906,7 @@
 
       rootGoals.forEach((goal, index) => {
         const descendants = getDescendantNodes(goal.id, activeNodes);
-        const goalActions = descendants.filter(n => n.type === 'action' || n.type === 'sub_action');
+        const goalActions = descendants.filter(n => n.type === 'action');
         const goalMilestones = descendants.filter(n => n.type === 'milestone');
         const totalActions = goalActions.length;
         const completedActions = goalActions.filter(n => n.status === 'done').length;
@@ -2382,7 +2375,7 @@
           if (filterType !== 'all') {
             if (filterType === 'goal' && n.type !== 'goal') return false;
             if (filterType === 'milestone' && (n.type !== 'milestone' && n.type !== 'sub_goal')) return false;
-            if (filterType === 'action' && (n.type !== 'action' && n.type !== 'sub_action')) return false;
+            if (filterType === 'action' && n.type !== 'action') return false;
           }
 
           // Status & Readiness filter
@@ -3813,7 +3806,7 @@
       // Filter actionable items
       const actionableNodes = useMemo(() => {
         return nodes.filter(n => {
-          if (typeFilter === 'actions' && n.type !== 'action' && n.type !== 'sub_action') return false;
+          if (typeFilter === 'actions' && n.type !== 'action') return false;
           if (typeFilter === 'all' && (n.type === 'goal' || n.type === 'sub_goal')) return false; // Focuses on executable tasks & milestones
           if (!filterCompleted && n.status === 'done') return false;
 
@@ -3867,7 +3860,7 @@
         targetGoals.forEach(goal => {
           const descendants = getDescendantNodes(goal.id, nodes);
           const milestones = descendants.filter(n => n.type === 'milestone');
-          const actions = descendants.filter(n => n.type === 'action' || n.type === 'sub_action');
+          const actions = descendants.filter(n => n.type === 'action');
 
           const activeActions = filterCompleted ? actions : actions.filter(a => a.status !== 'done');
           const finalActions = includeBlocked ? activeActions : activeActions.filter(a => readinessMap[a.id]?.readiness !== 'blocked');
@@ -3887,8 +3880,8 @@
         return groups;
       }, [rootGoals, selectedGoalId, nodes, filterCompleted, includeBlocked, dependencies, goalColorMap, readinessMap]);
 
-      const totalActiveTasks = nodes.filter(n => n.type === 'action' || n.type === 'sub_action' || n.type === 'milestone').length;
-      const completedTasks = nodes.filter(n => (n.type === 'action' || n.type === 'sub_action' || n.type === 'milestone') && n.status === 'done').length;
+      const totalActiveTasks = nodes.filter(n => n.type === 'action' || n.type === 'milestone').length;
+      const completedTasks = nodes.filter(n => (n.type === 'action' || n.type === 'milestone') && n.status === 'done').length;
       const progressPercent = totalActiveTasks > 0 ? Math.round((completedTasks / totalActiveTasks) * 100) : 0;
 
       const printDateStr = new Date().toLocaleDateString(undefined, {
@@ -4059,7 +4052,7 @@
                 {rootGoals.map(goal => {
                   const palette = goalColorMap.get(goal.id) || GOAL_COLOR_PALETTES[0];
                   const goalDescendants = getDescendantNodes(goal.id, nodes);
-                  const goalActions = goalDescendants.filter(n => n.type === 'action' || n.type === 'sub_action');
+                  const goalActions = goalDescendants.filter(n => n.type === 'action');
                   const doneCount = goalActions.filter(a => a.status === 'done').length;
 
                   return (
@@ -4663,7 +4656,7 @@
         let count = 0;
         for (const goal of activeGoals) {
           const descendants = getDescendantNodes(goal.id, nodes);
-          const actions = descendants.filter(n => n.type === 'action' || n.type === 'sub_action');
+          const actions = descendants.filter(n => n.type === 'action');
           const isComplete = (goal.status === 'done') || (actions.length > 0 && actions.every(a => a.status === 'done'));
           if (isComplete && !next.has(goal.id)) {
             next.add(goal.id);
@@ -4766,7 +4759,7 @@
         const map = new Map();
         for (const goal of activeGoals) {
           const descendants = getDescendantNodes(goal.id, nodes);
-          const actions = descendants.filter(n => n.type === 'action' || n.type === 'sub_action');
+          const actions = descendants.filter(n => n.type === 'action');
           const totalActions = actions.length;
           const completedActions = actions.filter(a => a.status === 'done').length;
           const progressPercent = totalActions > 0 ? Math.round((completedActions / totalActions) * 100) : (goal.status === 'done' ? 100 : 0);
@@ -6405,7 +6398,6 @@
         sub_goal: 'bg-blue-100 text-blue-800 border-blue-200',
         milestone: 'bg-purple-100 text-purple-800 border-purple-200',
         action: 'bg-sky-100 text-sky-800 border-sky-200',
-        sub_action: 'bg-slate-100 text-slate-800 border-slate-200',
       };
 
       // Status styling
@@ -6428,7 +6420,7 @@
           title={isExpanded ? "Click card to compact" : "Click card to expand text"}
           className={`border rounded-xl p-3 transition cursor-pointer select-text ${
             isMilestone 
-              ? 'border-purple-300 bg-purple-50/25 hover:border-purple-400 shadow-2xs ring-1 ring-purple-200/50' 
+              ? 'border-purple-300 bg-purple-50/40 hover:border-purple-400 shadow-sm ring-1 ring-purple-200/60' 
               : node.type === 'goal'
               ? 'border-indigo-200 bg-slate-50/70 hover:border-indigo-300 shadow-2xs'
               : 'border-slate-200 bg-slate-50/50 hover:border-slate-300'
@@ -6450,20 +6442,34 @@
                 <span className={`w-5 text-slate-300 text-center shrink-0 ${isExpanded ? 'mt-0.5' : ''}`}>•</span>
               )}
 
-              {/* Status toggle button */}
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleStatus(node);
-                }}
-                title="Click to advance status"
-                className={`px-2 py-0.5 rounded text-xs font-semibold border transition shrink-0 whitespace-nowrap ${statusStyles[node.status]}`}
-              >
-                {node.status.replace('_', ' ')}
-              </button>
+              {/* Status display: derived non-interactive badge for milestones, interactive button for actions/goals */}
+              {isMilestone ? (
+                <span 
+                  title={`Milestone status is derived from child actions: ${node.status.replace('_', ' ')}`}
+                  className={`px-2 py-0.5 rounded text-xs font-semibold border shrink-0 whitespace-nowrap cursor-default ${
+                    node.status === 'done' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
+                    node.status === 'in_progress' ? 'bg-purple-100 text-purple-800 border-purple-300' :
+                    node.status === 'abandoned' ? 'bg-rose-100 text-rose-800 border-rose-300' :
+                    'bg-slate-100 text-slate-700 border-slate-200'
+                  }`}
+                >
+                  {node.status === 'done' ? 'Achieved' : node.status === 'todo' ? 'Pending' : node.status.replace('_', ' ')}
+                </span>
+              ) : (
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleStatus(node);
+                  }}
+                  title="Click to advance status"
+                  className={`px-2 py-0.5 rounded text-xs font-semibold border transition shrink-0 whitespace-nowrap ${statusStyles[node.status]}`}
+                >
+                  {node.status.replace('_', ' ')}
+                </button>
+              )}
               <ContextHelpButton
                 title="Node Status"
-                summary="Explicit execution intent (todo, in_progress, done, abandoned). Click the status pill to cycle states."
+                summary="Explicit execution intent (todo, in_progress, done, abandoned). Milestones derive status from child actions."
                 termId="status"
                 topicId="goals-and-actions"
               />
@@ -6477,7 +6483,7 @@
               <ContextHelpButton
                 title={`${node.type.replace('_', ' ')} Node`}
                 summary={`A ${node.type.replace('_', ' ')} in the plan containment tree.`}
-                termId={node.type === 'goal' ? 'goal' : node.type === 'milestone' ? 'milestone' : node.type === 'action' ? 'action' : 'sub-action'}
+                termId={node.type === 'goal' ? 'goal' : node.type === 'milestone' ? 'milestone' : 'action'}
                 topicId="goals-and-actions"
               />
 
@@ -6486,7 +6492,7 @@
                 <div className="flex items-center space-x-2 min-w-0">
                   {isMilestone && (
                     <span className="text-[10px] font-bold px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded border border-purple-200 shrink-0">
-                      Phase Gate
+                      Checkpoint
                     </span>
                   )}
                   <span 
@@ -6573,26 +6579,16 @@
               onClick={(e) => e.stopPropagation()} 
               className={`flex items-center space-x-1 shrink-0 ${isExpanded ? 'mt-0.5' : ''}`}
             >
-              {/* Quick 1-Click Child Authoring (ADR 0001, ADR 0004) */}
+              {/* Quick 1-Click Child Authoring (ADR 0001, ADR 0004, ADR 0021) */}
               {(node.type === 'goal' || node.type === 'sub_goal') && (
-                <>
-                  <button 
-                    onClick={() => onAddChild && onAddChild(node, 'milestone')} 
-                    title="Add sequential milestone under this goal"
-                    className="px-2.5 py-1 text-xs font-semibold bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg flex items-center space-x-1 border border-purple-200 transition shadow-2xs"
-                  >
-                    <i className="fa-solid fa-flag text-[10px]"></i>
-                    <span>+ Milestone</span>
-                  </button>
-                  <button 
-                    onClick={() => onAddChild && onAddChild(node, 'action')} 
-                    title="Add action directly under this goal"
-                    className="px-2 py-1 text-xs font-medium bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-lg flex items-center space-x-1 border border-sky-200 transition shadow-2xs"
-                  >
-                    <i className="fa-solid fa-plus text-[10px]"></i>
-                    <span>Action</span>
-                  </button>
-                </>
+                <button 
+                  onClick={() => onAddChild && onAddChild(node, 'milestone')} 
+                  title="Add sequential milestone under this goal"
+                  className="px-2.5 py-1 text-xs font-semibold bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg flex items-center space-x-1 border border-purple-200 transition shadow-2xs"
+                >
+                  <i className="fa-solid fa-flag text-[10px]"></i>
+                  <span>+ Milestone</span>
+                </button>
               )}
 
               {node.type === 'milestone' && (
@@ -6603,17 +6599,6 @@
                 >
                   <i className="fa-solid fa-plus text-[10px]"></i>
                   <span>+ Action</span>
-                </button>
-              )}
-
-              {(node.type === 'action' || node.type === 'sub_action') && (
-                <button 
-                  onClick={() => onAddChild && onAddChild(node, 'sub_action')} 
-                  title="Add sub-action step under this action"
-                  className="px-2 py-1 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg flex items-center space-x-1 border border-slate-200 transition shadow-2xs"
-                >
-                  <i className="fa-solid fa-plus text-[10px]"></i>
-                  <span>+ Step</span>
                 </button>
               )}
 
@@ -6779,18 +6764,12 @@
         if (parentNode.type === 'goal' || parentNode.type === 'sub_goal') {
           return [
             { type: 'milestone', label: 'Milestone (Major Checkpoint / Phase Gate)', icon: 'fa-flag', color: 'text-purple-600' },
-            { type: 'action', label: 'Action (Direct Executable Task)', icon: 'fa-bolt', color: 'text-sky-600' },
             { type: 'sub_goal', label: 'Sub-Goal (Nested Strategic Objective)', icon: 'fa-bullseye', color: 'text-blue-600' },
           ];
         }
         if (parentNode.type === 'milestone') {
           return [
             { type: 'action', label: 'Action (Executable Task within Milestone)', icon: 'fa-bolt', color: 'text-sky-600' },
-          ];
-        }
-        if (parentNode.type === 'action' || parentNode.type === 'sub_action') {
-          return [
-            { type: 'sub_action', label: 'Sub-action / Step (Detailed Executable Step)', icon: 'fa-list-check', color: 'text-slate-600' },
           ];
         }
         return [];

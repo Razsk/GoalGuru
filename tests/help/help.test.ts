@@ -12,7 +12,6 @@ describe('Help & Glossary Domain Integrity', () => {
     'goal',
     'milestone',
     'action',
-    'sub-action',
     'dependency',
     'evidence',
     'proposal',
@@ -30,12 +29,12 @@ describe('Help & Glossary Domain Integrity', () => {
     'archive',
   ];
 
-  it('contains all 21 canonical domain terms from CONTEXT.md', () => {
+  it('contains all 20 canonical domain terms from CONTEXT.md', () => {
     const presentIds = GLOSSARY_TERMS.map((t) => t.id);
     for (const expectedId of EXPECTED_CANONICAL_TERMS) {
       expect(presentIds).toContain(expectedId);
     }
-    expect(GLOSSARY_TERMS.length).toBe(21);
+    expect(GLOSSARY_TERMS.length).toBe(20);
   });
 
   it('ensures every glossary term has definitions, categories, and non-empty avoid lists', () => {
@@ -133,7 +132,7 @@ describe('Help & Glossary REST API Endpoints', () => {
     const res = await app.inject({ method: 'GET', url: '/api/help/glossary' });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.terms.length).toBe(21);
+    expect(body.terms.length).toBe(20);
 
     // Filter by query
     const resSearch = await app.inject({ method: 'GET', url: '/api/help/glossary?q=readiness' });

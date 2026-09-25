@@ -88,16 +88,23 @@ Here is your breakdown:
   "changeSet": [
     {
       "type": "create_node",
+      "tempId": "temp:ms-1",
+      "nodeType": "milestone",
+      "parentId": "${goalId}",
+      "title": "Phase 1: Foundation"
+    },
+    {
+      "type": "create_node",
       "tempId": "temp:act-1",
       "nodeType": "action",
-      "parentId": "${goalId}",
+      "parentId": "temp:ms-1",
       "title": "Design Mockups"
     },
     {
       "type": "create_node",
       "tempId": "temp:act-2",
       "nodeType": "action",
-      "parentId": "${goalId}",
+      "parentId": "temp:ms-1",
       "title": "Build Frontend"
     },
     {
@@ -121,7 +128,7 @@ Good luck!
     const parsedData = parseRes.json();
     expect(parsedData.hasCollision).toBe(false);
     expect(parsedData.hasCycle).toBe(false);
-    expect(parsedData.changeSet).toHaveLength(3);
+    expect(parsedData.changeSet).toHaveLength(4);
 
     // 6. Commit Proposal
     const commitRes = await app.inject({
@@ -142,7 +149,7 @@ Good luck!
       url: `/api/workspaces/${wsId}/graph`,
     });
     const graphData = updatedGraphRes.json();
-    expect(graphData.nodes).toHaveLength(3); // 1 goal + 2 actions
+    expect(graphData.nodes).toHaveLength(4); // 1 goal + 1 milestone + 2 actions
     expect(graphData.dependencies).toHaveLength(1);
 
     // Dynamic readiness check: act-2 should be blocked by act-1
@@ -402,10 +409,13 @@ Here are 3 recommended goals:
       url: `/api/workspaces/${wsId}/graph`,
     });
     const nodes = graphRes.json().nodes;
-    expect(nodes).toHaveLength(3); // 1 auto-goal + 2 actions
+    expect(nodes).toHaveLength(4); // 1 auto-goal + 1 auto-milestone + 2 actions
     const autoGoal = nodes.find((n: any) => n.type === 'goal');
     expect(autoGoal).toBeDefined();
     expect(autoGoal.title).toBe('Build authentication service');
+    const autoMilestone = nodes.find((n: any) => n.type === 'milestone');
+    expect(autoMilestone).toBeDefined();
+    expect(autoMilestone.parentId).toBe(autoGoal.id);
 
     // Undo rollback
     const undoRes = await app.inject({

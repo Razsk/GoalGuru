@@ -1,18 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { isValidParentChild, isValidDependencyType, Node, Dependency } from '../../src/core/types.js';
-import { detectCycle } from '../../src/core/cycle.js';
+import { detectCycle, validateHierarchicalDependencies } from '../../src/core/cycle.js';
 import { computeReadiness } from '../../src/core/readiness.js';
 
-describe('Containment Hierarchy Rules (ADR 0001 & ADR 0004)', () => {
+describe('Containment Hierarchy Rules (ADR 0001 & ADR 0004 & Milestone Refactor)', () => {
   it('allows top-level goals without a parent', () => {
     expect(isValidParentChild(null, 'goal')).toBe(true);
     expect(isValidParentChild(null, 'action')).toBe(false);
   });
 
-  it('allows goals to contain sub-goals, milestones, and direct actions', () => {
+  it('allows goals to contain sub-goals and milestones, but not direct actions', () => {
     expect(isValidParentChild('goal', 'sub_goal')).toBe(true);
     expect(isValidParentChild('goal', 'milestone')).toBe(true);
-    expect(isValidParentChild('goal', 'action')).toBe(true);
+    expect(isValidParentChild('goal', 'action')).toBe(false);
   });
 
   it('allows milestones to contain actions', () => {
@@ -20,23 +20,27 @@ describe('Containment Hierarchy Rules (ADR 0001 & ADR 0004)', () => {
     expect(isValidParentChild('milestone', 'milestone')).toBe(false);
   });
 
-  it('allows actions to contain sub-actions recursively', () => {
-    expect(isValidParentChild('action', 'sub_action')).toBe(true);
-    expect(isValidParentChild('sub_action', 'sub_action')).toBe(true);
+  it('actions are leaf execution nodes and cannot contain children', () => {
+    expect(isValidParentChild('action', 'action')).toBe(false);
     expect(isValidParentChild('action', 'milestone')).toBe(false);
   });
 });
 
-describe('Dependency Target Rules (ADR 0001 & ADR 0003)', () => {
-  it('allows dependencies between actions and milestones', () => {
+describe('Dependency Target Rules', () => {
+  it('allows dependencies between actions and between milestones', () => {
     expect(isValidDependencyType('action', 'action')).toBe(true);
-    expect(isValidDependencyType('action', 'milestone')).toBe(true);
-    expect(isValidDependencyType('milestone', 'action')).toBe(true);
+    expect(isValidDependencyType('milestone', 'milestone')).toBe(true);
+  });
+
+  it('disallows cross-type dependencies between actions and milestones', () => {
+    expect(isValidDependencyType('action', 'milestone')).toBe(false);
+    expect(isValidDependencyType('milestone', 'action')).toBe(false);
   });
 
   it('disallows goals from having direct dependencies', () => {
     expect(isValidDependencyType('goal', 'action')).toBe(false);
     expect(isValidDependencyType('action', 'goal')).toBe(false);
+    expect(isValidDependencyType('goal', 'milestone')).toBe(false);
   });
 });
 
@@ -143,5 +147,111 @@ describe('Dynamic Readiness Computation (ADR 0003)', () => {
 
     const readinessMap = computeReadiness(nodes, dependencies);
     expect(readinessMap.get('act_3')).toEqual({ readiness: 'blocked', blockingNodeIds: ['act_2'], blockingNodeTitles: ['Node act_2'] });
+  });
+
+  it('cascades milestone dependencies down to block child actions', () => {
+    const nodes: Node[] = [
+      {
+        id: 'ms_1',
+        workspaceId: 'ws_1',
+        type: 'milestone',
+        parentId: 'goal_1',
+        title: 'Phase 1 Checkpoint',
+        status: 'todo',
+        evidence: [],
+        createdAt: '2026-09-18T12:00:00Z',
+        updatedAt: '2026-09-18T12:00:00Z',
+      },
+      {
+        id: 'act_1',
+        workspaceId: 'ws_1',
+        type: 'action',
+        parentId: 'ms_1',
+        title: 'Task in Phase 1',
+        status: 'todo',
+        evidence: [],
+        createdAt: '2026-09-18T12:00:00Z',
+        updatedAt: '2026-09-18T12:00:00Z',
+      },
+      {
+        id: 'ms_2',
+        workspaceId: 'ws_1',
+        type: 'milestone',
+        parentId: 'goal_1',
+        title: 'Phase 2 Checkpoint',
+        status: 'todo',
+        evidence: [],
+        createdAt: '2026-09-18T12:00:00Z',
+        updatedAt: '2026-09-18T12:00:00Z',
+      },
+      {
+        id: 'act_2',
+        workspaceId: 'ws_1',
+        type: 'action',
+        parentId: 'ms_2',
+        title: 'Task in Phase 2',
+        status: 'todo',
+        evidence: [],
+        createdAt: '2026-09-18T12:00:00Z',
+        updatedAt: '2026-09-18T12:00:00Z',
+      },
+    ];
+
+    // ms_2 depends on ms_1
+    const dependencies: Dependency[] = [
+      { id: 'dep_ms', workspaceId: 'ws_1', fromNodeId: 'ms_1', toNodeId: 'ms_2', createdAt: '' },
+    ];
+
+    // Initially ms_1 is not done, so act_2 in ms_2 must be blocked by ms_1
+    const map1 = computeReadiness(nodes, dependencies);
+    expect(map1.get('act_1')?.readiness).toBe('ready');
+    expect(map1.get('act_2')?.readiness).toBe('blocked');
+    expect(map1.get('act_2')?.blockingNodeIds).toContain('ms_1');
+
+    // When act_1 is done, ms_1 achieves derived status 'done', unblocking act_2
+    nodes[1].status = 'done';
+    const map2 = computeReadiness(nodes, dependencies);
+    expect(map2.get('act_2')?.readiness).toBe('ready');
+    expect(map2.get('act_2')?.blockingNodeIds).toEqual([]);
+  });
+});
+
+describe('Hierarchical Cycle Prevention', () => {
+  it('detects cross-milestone backward dependency deadlocks', () => {
+    const nodes = [
+      { id: 'ms_1', type: 'milestone', parentId: 'goal_1', title: 'Milestone 1' },
+      { id: 'act_1', type: 'action', parentId: 'ms_1', title: 'Action 1' },
+      { id: 'ms_2', type: 'milestone', parentId: 'goal_1', title: 'Milestone 2' },
+      { id: 'act_2', type: 'action', parentId: 'ms_2', title: 'Action 2' },
+    ];
+
+    // ms_2 depends on ms_1 (ms_1 precedes ms_2)
+    const dependencies = [
+      { fromNodeId: 'ms_1', toNodeId: 'ms_2' },
+      // act_1 (in ms_1) depends on act_2 (in ms_2) - BACKWARD DEADLOCK!
+      { fromNodeId: 'act_2', toNodeId: 'act_1' },
+    ];
+
+    const result = validateHierarchicalDependencies(dependencies, nodes as any);
+    expect(result.hasCycle).toBe(true);
+    expect(result.error).toContain('Hierarchical cycle');
+  });
+
+  it('allows forward cross-milestone dependencies', () => {
+    const nodes = [
+      { id: 'ms_1', type: 'milestone', parentId: 'goal_1', title: 'Milestone 1' },
+      { id: 'act_1', type: 'action', parentId: 'ms_1', title: 'Action 1' },
+      { id: 'ms_2', type: 'milestone', parentId: 'goal_1', title: 'Milestone 2' },
+      { id: 'act_2', type: 'action', parentId: 'ms_2', title: 'Action 2' },
+    ];
+
+    // ms_2 depends on ms_1, and act_2 (in ms_2) depends on act_1 (in ms_1) - FORWARD VALID!
+    const dependencies = [
+      { fromNodeId: 'ms_1', toNodeId: 'ms_2' },
+      { fromNodeId: 'act_1', toNodeId: 'act_2' },
+    ];
+
+    const result = validateHierarchicalDependencies(dependencies, nodes as any);
+    expect(result.hasCycle).toBe(false);
   });
 });

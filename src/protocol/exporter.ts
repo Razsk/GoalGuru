@@ -83,7 +83,7 @@ export function extractCausalSubgraph(
   } else if (requestMode === 'report_progress') {
     // Include active / in_progress actions across the goal
     for (const n of allNodes) {
-      if (!n.archivedAt && n.status === 'in_progress' && (n.type === 'action' || n.type === 'sub_action')) {
+      if (!n.archivedAt && n.status === 'in_progress' && n.type === 'action') {
         extraIds.add(n.id);
       }
     }
@@ -182,11 +182,11 @@ export function getModeSpecificInstructions(requestMode: string): string {
     case 'create_plan':
       return `OBJECTIVE FOR REQUEST MODE (create_plan):
 Decompose the target node into a clear, actionable execution hierarchy.
-- When planning a 'goal': First establish 2-4 sequential intermediate milestones (nodeType: 'milestone') representing major delivery phases or checkpoints, and connect them sequentially with 'add_dependency' edges (e.g. temp:ms-1 -> temp:ms-2). Then decompose each milestone into concrete executable actions (nodeType: 'action') and sub-actions (nodeType: 'sub_action') with 'add_dependency' edges.
-- When planning a 'milestone': Decompose into sequential actions (nodeType: 'action') and sub-actions (nodeType: 'sub_action') with 'add_dependency' edges.
-- When planning an 'action': Decompose into fine-grained sub-actions (nodeType: 'sub_action').
-- Expected Mutations: Use 'create_node' with temporary IDs (temp:ms-*, temp:act-*, temp:sub-*) and 'add_dependency' edges.
-- Constraints: Maintain strict DAG structure without cycles. Do not modify or delete existing unrelated nodes.`;
+- When planning a 'goal': First establish 2-4 sequential intermediate milestones (nodeType: 'milestone') representing major achievement checkpoints, expected outcomes, and realized benefits. Connect milestones sequentially with 'add_dependency' edges (e.g. temp:ms-1 -> temp:ms-2). Then decompose each milestone into concrete executable actions (nodeType: 'action') with actionable advice in each action's description.
+- When planning a 'milestone': Decompose into concrete actions (nodeType: 'action') grouped under the milestone. Detail operational guidance and context in each action's description. Connect actions with 'add_dependency' edges where strict sequencing is required.
+- When planning an 'action': Enrich the action's 'description' with detailed step-by-step guidance, context, and operational advice. If the work is broader than a single task, propose splitting it into sibling actions under the same parent milestone.
+- Expected Mutations: Use 'create_node' with temporary IDs (temp:ms-*, temp:act-*) and 'add_dependency' edges. Actions are leaf execution items; sub-actions are not supported.
+- Constraints: Maintain strict DAG structure without cycles. Dependencies can only exist milestone-to-milestone or action-to-action. Actions cannot belong directly to goals; every action must belong to a milestone.`;
 
     case 'action_assistance':
     case 'task_assistance':
@@ -226,7 +226,7 @@ export function formatExportPrompt(options: ExportPromptOptions): string {
   return `You are the Goal Guru planning advisor.
 The application owns authoritative truth. Never claim to have modified application state directly.
 Return all proposed changes and advice strictly inside a \`\`\`goalguru-proposal JSON codeblock.
-Use temporary references (e.g. temp:act-1, temp:act-2) for newly proposed nodes so they can cross-reference each other.
+Use temporary references (e.g. temp:ms-1, temp:act-1, temp:act-2) for newly proposed nodes so they can cross-reference each other.
 Existing entity IDs must be preserved exactly.
 
 ---
@@ -246,7 +246,7 @@ INSTRUCTIONS FOR REQUEST MODE (${requestMode}):
 ${getModeSpecificInstructions(requestMode)}
 
 REQUEST MODES REFERENCE:
-* create_plan: Decompose goal/milestone into sequential milestones and actions (mutations: create_node, add_dependency).
+* create_plan: Decompose goal into sequential milestones with concrete actions (mutations: create_node, add_dependency).
 * action_assistance: Execution guidance and research advice without graph mutation (advice only, optional add_evidence).
 * report_progress: Reconcile notes to mark finished tasks 'done', log evidence, and add newly discovered follow-ups.
 * replan: Reroute around blockers and update remaining open paths (never alter completed nodes).

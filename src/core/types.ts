@@ -3,7 +3,7 @@
  * Conforms to CONTEXT.md and ADRs 0001-0018
  */
 
-export type NodeType = 'goal' | 'sub_goal' | 'milestone' | 'action' | 'sub_action';
+export type NodeType = 'goal' | 'sub_goal' | 'milestone' | 'action';
 
 export type NodeStatus = 'todo' | 'in_progress' | 'done' | 'abandoned';
 
@@ -43,8 +43,8 @@ export interface Node {
 export interface Dependency {
   id: string;
   workspaceId: string;
-  fromNodeId: string; // The dependent node (e.g. Action A)
-  toNodeId: string;   // The dependency target node that must be completed first (e.g. Action B)
+  fromNodeId: string; // The prerequisite node that must be completed first
+  toNodeId: string;   // The dependent node waiting on fromNodeId
   createdAt: string;
 }
 
@@ -65,7 +65,8 @@ export interface User {
 }
 
 /**
- * Valid parent-child nesting rules (ADR 0001 & ADR 0004)
+ * Valid parent-child nesting rules (ADR 0001, ADR 0004 & Milestone Refactor)
+ * Hierarchy is strictly: Goal -> (Sub-Goal ->) Milestone -> Action
  */
 export function isValidParentChild(parentType: NodeType | null, childType: NodeType): boolean {
   if (parentType === null) {
@@ -76,25 +77,26 @@ export function isValidParentChild(parentType: NodeType | null, childType: NodeT
   switch (parentType) {
     case 'goal':
     case 'sub_goal':
-      // Goals can contain sub-goals, milestones, or direct actions (ADR 0004)
-      return childType === 'sub_goal' || childType === 'milestone' || childType === 'action';
+      // Goals can contain sub-goals or milestones
+      return childType === 'sub_goal' || childType === 'milestone';
     case 'milestone':
-      // Milestones contain actions
+      // Milestones contain concrete actions
       return childType === 'action';
     case 'action':
-    case 'sub_action':
-      // Actions can recursively contain sub-actions
-      return childType === 'sub_action';
+      // Actions are concrete execution leaf units and cannot contain child nodes
+      return false;
     default:
       return false;
   }
 }
 
 /**
- * Valid dependency target rules (ADR 0001 & ADR 0003)
- * Dependencies are allowed between Actions and Milestones. Goals cannot have direct dependencies.
+ * Valid dependency target rules
+ * Dependencies are allowed between Actions (intra or cross-milestone) and between Milestones.
+ * Cross-type dependencies (Action <-> Milestone) and direct Goal dependencies are disallowed.
  */
 export function isValidDependencyType(fromType: NodeType, toType: NodeType): boolean {
-  const allowedTypes: NodeType[] = ['action', 'sub_action', 'milestone'];
-  return allowedTypes.includes(fromType) && allowedTypes.includes(toType);
+  if (fromType === 'milestone' && toType === 'milestone') return true;
+  if (fromType === 'action' && toType === 'action') return true;
+  return false;
 }

@@ -15,23 +15,19 @@ _Avoid_: Project, domain, vault
 ## Core Language
 
 **Goal**:
-A high-level desired outcome or objective that contains sub-goals, milestones, and actions.
+A high-level desired outcome or objective that contains milestones (and optional sub-goals).
 _Avoid_: Project, epic, target
 
 **Milestone**:
-A significant checkpoint or target state within a goal that marks major progress or delivery.
+A significant checkpoint or achievement reached by performing all the concrete actions grouped underneath it, realizing its benefits as a stepping stone toward the goal.
 _Avoid_: Phase, sprint, deliverable
 
 **Action**:
-An executable task or discrete step performed by the user to advance toward a goal. Can be recursively decomposed into sub-actions.
+A concrete, executable step grouped under a milestone to advance toward its achievement. Leaf execution item that can include guidance and context in its description.
 _Avoid_: Task, todo, ticket, item
 
-**Sub-Action**:
-An action nested within a parent action to decompose complex execution steps.
-_Avoid_: Sub-task, nested task, child step
-
 **Dependency**:
-A directed relationship indicating that a node cannot proceed until another node is completed. Allowed between Actions and Milestones across goals.
+A directed relationship indicating that a node cannot proceed until another node is completed. Allowed between milestones or between actions.
 _Avoid_: Prerequisite, blocker edge, link
 
 **Evidence**:

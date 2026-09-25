@@ -171,3 +171,70 @@ function canReach(
   return false;
 }
 
+export interface HierarchicalCycleResult {
+  hasCycle: boolean;
+  error?: string;
+}
+
+/**
+ * Validates dependencies for both direct DAG cycles and hierarchical cross-milestone deadlocks.
+ */
+export function validateHierarchicalDependencies(
+  dependencies: Pick<Dependency, 'fromNodeId' | 'toNodeId'>[],
+  nodes: { id: string; type: string; parentId: string | null; title: string }[]
+): HierarchicalCycleResult {
+  // 1. Direct cycle detection across all dependencies
+  const directCycle = detectCycle(dependencies);
+  if (directCycle.hasCycle) {
+    return {
+      hasCycle: true,
+      error: `Circular dependency detected involving: ${directCycle.cycleNodes.join(', ')}`,
+    };
+  }
+
+  const nodeMap = new Map<string, { id: string; type: string; parentId: string | null; title: string }>();
+  for (const n of nodes) {
+    nodeMap.set(n.id, n);
+  }
+
+  // 2. Build milestone dependency reachability
+  // fromNodeId is prerequisite, toNodeId is dependent (toNodeId depends on fromNodeId)
+  const milestoneAdjacency = new Map<string, string[]>();
+  for (const dep of dependencies) {
+    const fromNode = nodeMap.get(dep.fromNodeId);
+    const toNode = nodeMap.get(dep.toNodeId);
+    if (fromNode?.type === 'milestone' && toNode?.type === 'milestone') {
+      if (!milestoneAdjacency.has(dep.fromNodeId)) {
+        milestoneAdjacency.set(dep.fromNodeId, []);
+      }
+      milestoneAdjacency.get(dep.fromNodeId)!.push(dep.toNodeId);
+    }
+  }
+
+  const milestoneDependsOn = (dependent: string, prerequisite: string): boolean => {
+    return canReach(prerequisite, dependent, milestoneAdjacency, new Set<string>());
+  };
+
+  // 3. Check for cross-milestone backward dependencies
+  for (const dep of dependencies) {
+    const fromNode = nodeMap.get(dep.fromNodeId);
+    const toNode = nodeMap.get(dep.toNodeId);
+    if (fromNode?.type === 'action' && toNode?.type === 'action') {
+      const mFrom = fromNode.parentId;
+      const mTo = toNode.parentId;
+      if (mFrom && mTo && mFrom !== mTo) {
+        if (milestoneDependsOn(mFrom, mTo)) {
+          const fromMilestoneTitle = nodeMap.get(mFrom)?.title || mFrom;
+          const toMilestoneTitle = nodeMap.get(mTo)?.title || mTo;
+          return {
+            hasCycle: true,
+            error: `Hierarchical cycle: Action '${toNode.title}' in milestone '${toMilestoneTitle}' cannot depend on action '${fromNode.title}' in downstream milestone '${fromMilestoneTitle}'.`,
+          };
+        }
+      }
+    }
+  }
+
+  return { hasCycle: false };
+}
+

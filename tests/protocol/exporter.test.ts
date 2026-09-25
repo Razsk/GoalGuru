@@ -164,7 +164,7 @@ describe('Subgraph Context Exporter (ADR 0006 & ADR 0013)', () => {
     });
 
     expect(prompt).toContain("When planning a 'goal': First establish 2-4 sequential intermediate milestones (nodeType: 'milestone')");
-    expect(prompt).toContain("connect them sequentially with 'add_dependency' edges");
+    expect(prompt).toContain("Connect milestones sequentially with 'add_dependency' edges");
     expect(prompt).toContain('OBJECTIVE FOR REQUEST MODE (create_plan):');
   });
 
