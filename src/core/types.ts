@@ -46,6 +46,7 @@ export interface Dependency {
   fromNodeId: string; // The prerequisite node that must be completed first
   toNodeId: string;   // The dependent node waiting on fromNodeId
   createdAt: string;
+  isCascaded?: boolean;
 }
 
 export interface Workspace {

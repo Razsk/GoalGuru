@@ -112,3 +112,80 @@ export function computeReadiness(
 
   return result;
 }
+
+/**
+ * Computes all effective dependencies in the graph, integrating:
+ * 1. Explicit direct dependencies (`fromNodeId -> toNodeId`).
+ * 2. Cascaded dependencies from prerequisite milestones to the entry actions of dependent milestones.
+ * 3. Dynamic guarantee: Any node marked 'blocked' by computeReadiness is guaranteed to have a directed edge
+ *    pointing to it from its blocking node(s).
+ */
+export function computeEffectiveDependencies(
+  nodes: Node[],
+  dependencies: Dependency[],
+  readinessMap?: Map<string, NodeReadinessInfo>
+): Dependency[] {
+  const nodeMap = new Map<string, Node>();
+  for (const node of nodes) {
+    nodeMap.set(node.id, node);
+  }
+
+  const result: Dependency[] = [...dependencies];
+  const edgeKeys = new Set(dependencies.map((d) => `${d.fromNodeId}->${d.toNodeId}`));
+
+  // 1. Milestone cascading for entry actions of dependent milestones
+  for (const dep of dependencies) {
+    const fromNode = nodeMap.get(dep.fromNodeId);
+    const toNode = nodeMap.get(dep.toNodeId);
+    if (fromNode?.type === 'milestone' && toNode?.type === 'milestone') {
+      const childActions = nodes.filter(
+        (n) => n.parentId === toNode.id && n.type === 'action' && !n.archivedAt
+      );
+      for (const action of childActions) {
+        // Is this an entry action in toNode? (i.e. has no inbound action deps within toNode)
+        const hasInternalInboundDep = dependencies.some(
+          (d) => d.toNodeId === action.id && nodeMap.get(d.fromNodeId)?.parentId === toNode.id
+        );
+        if (!hasInternalInboundDep) {
+          const key = `${dep.fromNodeId}->${action.id}`;
+          if (!edgeKeys.has(key)) {
+            edgeKeys.add(key);
+            result.push({
+              id: `cascaded_${dep.fromNodeId}_${action.id}`,
+              workspaceId: dep.workspaceId || action.workspaceId,
+              fromNodeId: dep.fromNodeId,
+              toNodeId: action.id,
+              createdAt: dep.createdAt || action.createdAt || new Date().toISOString(),
+              isCascaded: true,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Guarantee: Every blocker in blockingNodeIds must have a directed edge to the blocked node
+  const rMap = readinessMap || computeReadiness(nodes, dependencies);
+  for (const node of nodes) {
+    const info = rMap.get(node.id);
+    if (info?.readiness === 'blocked' && info.blockingNodeIds) {
+      for (const blockerId of info.blockingNodeIds) {
+        const key = `${blockerId}->${node.id}`;
+        if (!edgeKeys.has(key)) {
+          edgeKeys.add(key);
+          result.push({
+            id: `cascaded_${blockerId}_${node.id}`,
+            workspaceId: node.workspaceId,
+            fromNodeId: blockerId,
+            toNodeId: node.id,
+            createdAt: node.createdAt || new Date().toISOString(),
+            isCascaded: true,
+          });
+        }
+      }
+    }
+  }
+
+  return result;
+}
+

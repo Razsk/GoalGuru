@@ -2165,6 +2165,62 @@
       return null;
     }
 
+    // --- Effective Dependencies Synthesis (Milestone Cascading & Blocker Arrow Guarantee) ---
+    function computeEffectiveDependencies(nodes, dependencies, readinessMap) {
+      const nodeMap = new Map();
+      nodes.forEach(n => nodeMap.set(n.id, n));
+      const result = [...dependencies];
+      const edgeKeys = new Set(dependencies.map(d => `${d.fromNodeId}->${d.toNodeId}`));
+
+      // 1. Milestone cascading for entry actions of dependent milestones
+      for (const dep of dependencies) {
+        const fromNode = nodeMap.get(dep.fromNodeId);
+        const toNode = nodeMap.get(dep.toNodeId);
+        if (fromNode && toNode && fromNode.type === 'milestone' && toNode.type === 'milestone') {
+          const childActions = nodes.filter(n => n.parentId === toNode.id && n.type === 'action');
+          for (const action of childActions) {
+            // Is this an entry action in toNode? (no inbound action deps within toNode)
+            const hasInternalDep = dependencies.some(
+              d => d.toNodeId === action.id && nodeMap.get(d.fromNodeId) && nodeMap.get(d.fromNodeId).parentId === toNode.id
+            );
+            if (!hasInternalDep) {
+              const key = `${dep.fromNodeId}->${action.id}`;
+              if (!edgeKeys.has(key)) {
+                edgeKeys.add(key);
+                result.push({
+                  id: `cascaded_${dep.fromNodeId}_${action.id}`,
+                  fromNodeId: dep.fromNodeId,
+                  toNodeId: action.id,
+                  isCascaded: true,
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // 2. Guarantee: Any node that is blocked by a blocker MUST have an incoming directed edge from that blocker
+      for (const node of nodes) {
+        const info = readinessMap[node.id];
+        if (info && info.readiness === 'blocked' && Array.isArray(info.blockingNodeIds)) {
+          for (const blockerId of info.blockingNodeIds) {
+            const key = `${blockerId}->${node.id}`;
+            if (!edgeKeys.has(key)) {
+              edgeKeys.add(key);
+              result.push({
+                id: `cascaded_${blockerId}_${node.id}`,
+                fromNodeId: blockerId,
+                toNodeId: node.id,
+                isCascaded: true,
+              });
+            }
+          }
+        }
+      }
+
+      return result;
+    }
+
     // --- Miro-Inspired Visual Dependency Graph & Scope Filtering View ---
     function DependenciesView({ graphData, workspaceId, onRefreshGraph, onToggleStatus, onExport, onAddEvidence, showToast }) {
       const [viewMode, setViewMode] = useState('canvas'); // 'canvas' | 'cards' | 'matrix'
@@ -2194,8 +2250,15 @@
 
       const nodes = useMemo(() => (graphData.nodes || []).filter(n => !n.archivedAt), [graphData.nodes]);
       const activeNodeIds = useMemo(() => new Set(nodes.map(n => n.id)), [nodes]);
-      const dependencies = useMemo(() => (graphData.dependencies || []).filter(d => activeNodeIds.has(d.fromNodeId) && activeNodeIds.has(d.toNodeId)), [graphData.dependencies, activeNodeIds]);
+      const rawDependencies = useMemo(() => (graphData.dependencies || []).filter(d => activeNodeIds.has(d.fromNodeId) && activeNodeIds.has(d.toNodeId)), [graphData.dependencies, activeNodeIds]);
       const readinessMap = graphData.readiness || {};
+
+      const dependencies = useMemo(() => {
+        if (graphData.effectiveDependencies && graphData.effectiveDependencies.length > 0) {
+          return graphData.effectiveDependencies.filter(d => activeNodeIds.has(d.fromNodeId) && activeNodeIds.has(d.toNodeId));
+        }
+        return computeEffectiveDependencies(nodes, rawDependencies, readinessMap);
+      }, [graphData.effectiveDependencies, nodes, rawDependencies, readinessMap, activeNodeIds]);
 
       const nodeMap = useMemo(() => {
         const m = new Map();
@@ -2562,6 +2625,12 @@
 
       // Unlink a dependency
       const handleUnlink = async (fromNodeId, toNodeId) => {
+        const edge = dependencies.find(d => d.fromNodeId === fromNodeId && d.toNodeId === toNodeId);
+        if (edge && edge.isCascaded) {
+          const fromNode = nodeMap.get(fromNodeId);
+          showToast(`This link is cascaded from milestone "${fromNode ? fromNode.title : fromNodeId}". Unlink the milestone dependency to remove it.`, 'info');
+          return;
+        }
         try {
           const res = await fetch('/api/workspaces/' + workspaceId + '/dependencies', {
             method: 'DELETE',
@@ -3151,7 +3220,14 @@
                             onMouseEnter={() => setHoveredEdge(dep)}
                             onMouseLeave={() => setHoveredEdge(null)}
                             onClick={() => handleUnlink(dep.fromNodeId, dep.toNodeId)}
-                          />
+                          >
+                            <title>
+                              {dep.isCascaded
+                                ? `Milestone Stage-Gate (Cascaded): ${fromNode ? fromNode.title : dep.fromNodeId} ➔ ${nodeMap.get(dep.toNodeId)?.title || dep.toNodeId} (${isSatisfied ? 'Satisfied' : 'Blocking'})`
+                                : `${fromNode ? fromNode.title : dep.fromNodeId} ➔ ${nodeMap.get(dep.toNodeId)?.title || dep.toNodeId} (${isSatisfied ? 'Satisfied' : 'Blocking'})`
+                              }
+                            </title>
+                          </path>
                           {/* Visual Bezier Path */}
                           <path
                             d={d}
@@ -3466,12 +3542,16 @@
                         {selectedRelation.prerequisites.length === 0 ? (
                           <span className="text-slate-400 italic">None</span>
                         ) : (
-                          selectedRelation.prerequisites.map(p => (
-                            <span key={p.id} className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-lg bg-white border border-slate-200 text-[11px]">
-                              <span>{p.title}</span>
-                              <button onClick={() => handleUnlink(p.id, selectedRelation.node.id)} className="text-slate-400 hover:text-rose-600 font-bold" title="Unlink">×</button>
-                            </span>
-                          ))
+                          selectedRelation.prerequisites.map(p => {
+                            const isCascaded = dependencies.some(d => d.fromNodeId === p.id && d.toNodeId === selectedRelation.node.id && d.isCascaded);
+                            return (
+                              <span key={p.id} className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-lg bg-white border border-slate-200 text-[11px]">
+                                {isCascaded && <i className="fa-solid fa-flag text-[9px] text-amber-500 mr-0.5" title="Cascaded milestone prerequisite"></i>}
+                                <span>{p.title}</span>
+                                <button onClick={() => handleUnlink(p.id, selectedRelation.node.id)} className="text-slate-400 hover:text-rose-600 font-bold" title={isCascaded ? 'Cascaded milestone link' : 'Unlink'}>×</button>
+                              </span>
+                            );
+                          })
                         )}
                         <button
                           onClick={() => setAddDepModal({ isOpen: true, fromId: '', toId: selectedRelation.node.id })}

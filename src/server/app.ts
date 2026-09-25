@@ -5,7 +5,7 @@ import { Repository } from '../storage/repository.js';
 import { extractProposalFromText, parseProposalEnvelope } from '../protocol/parser.js';
 import { resolveTemporaryIds, pruneDeselectedMutations, getMutationKey } from '../protocol/changeset.js';
 import { extractCausalSubgraph, formatExportPrompt } from '../protocol/exporter.js';
-import { computeReadiness } from '../core/readiness.js';
+import { computeReadiness, computeEffectiveDependencies } from '../core/readiness.js';
 import { detectCycle } from '../core/cycle.js';
 import { Mutation } from '../protocol/types.js';
 import { GLOSSARY_TERMS, HELP_TOPICS } from '../help/content.js';
@@ -100,6 +100,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     const nodes = repo.listNodes(id);
     const dependencies = repo.listDependencies(id);
     const readinessMap = computeReadiness(nodes, dependencies);
+    const effectiveDependencies = computeEffectiveDependencies(nodes, dependencies, readinessMap);
     const stateVersion = repo.getStateVersion(id);
 
     // Convert map to object for JSON serialization with resolved blocker titles
@@ -118,6 +119,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
       stateVersion,
       nodes,
       dependencies,
+      effectiveDependencies,
       readiness: readinessObj,
     };
   });
